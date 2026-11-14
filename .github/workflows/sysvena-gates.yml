@@ -1,34 +1,54 @@
 name: sysvena gates
 
-# Shared PR gates for every sysvena repository. Call it from the repo's own
-# .github/workflows/ci.yml:
-#
-#   jobs:
-#     sysvena:
-#       uses: sysvena/.github/.github/workflows/sysvena-gates.yml@main
-#       with:
-#         changeset: true
+# Shared PR gates for every sysvena repository. The org ruleset
+# `require-sysvena-gates` requires this workflow on the default branch of every
+# repository, so GitHub runs it on each PR without any file in that repository.
+# It detects what to check from the repository itself:
+#   - changeset:   `.changeset/config.json` exists
+#   - agent rules: package.json depends on `@sysvena/agent-rules`
+#   - lessons:     `scripts/check-lessons.mjs` exists
 #
 # Workflows that upload artifacts set `retention-days: 7` (artifacts share the
 # 2 GB Packages storage; the org keeps logs for 30 days).
 
 on:
-  workflow_call:
-    inputs:
-      changeset:
-        description: Require a changeset when the PR changes shipped files.
-        type: boolean
-        default: true
-      agent-rules:
-        description: Run `sysvena-agent-rules check` (Open Mercato apps).
-        type: boolean
-        default: false
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+concurrency:
+  group: sysvena-gates-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
   pull-requests: read
 
 jobs:
+  detect:
+    name: Detect checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changeset: ${{ steps.detect.outputs.changeset }}
+      agent-rules: ${{ steps.detect.outputs.agent-rules }}
+      lessons: ${{ steps.detect.outputs.lessons }}
+      nvmrc: ${{ steps.detect.outputs.nvmrc }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect
+        id: detect
+        run: |
+          flag() { if eval "$1"; then echo true; else echo false; fi; }
+          {
+            echo "changeset=$(flag '[ -f .changeset/config.json ]')"
+            echo "agent-rules=$(flag '[ -f package.json ] && grep -q "\"@sysvena/agent-rules\"" package.json')"
+            echo "lessons=$(flag '[ -f scripts/check-lessons.mjs ]')"
+            echo "nvmrc=$(flag '[ -f .nvmrc ]')"
+          } | tee -a "$GITHUB_OUTPUT"
+
   pr-title:
     name: PR title
     runs-on: ubuntu-latest
@@ -51,6 +71,7 @@ jobs:
 
   changes:
     name: Changeset and regression test
+    needs: detect
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -61,7 +82,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-          REQUIRE_CHANGESET: ${{ inputs.changeset }}
+          REQUIRE_CHANGESET: ${{ needs.detect.outputs.changeset }}
         run: |
           set -euo pipefail
           gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename' > changed.txt
@@ -70,18 +91,20 @@ jobs:
           failed=0
 
           # Changeset: shipped files need a .changeset/*.md (docs, agent files and CI are exempt).
-          if [ "$REQUIRE_CHANGESET" = "true" ] && [[ "$HEAD_REF" != changeset-release/* ]]; then
+          if [ "$REQUIRE_CHANGESET" != "true" ]; then
+            echo "No .changeset/config.json: changesets are not used in this repository."
+          elif [[ "$HEAD_REF" == changeset-release/* ]]; then
+            echo "Release PR: no changeset needed."
+          else
             shipped=$(grep -Ev '(\.md$|^docs/|^\.ai/|^\.github/|^\.changeset/)' touched.txt || true)
-            if [ -n "$shipped" ]; then
-              if grep -E '^\.changeset/.+\.md$' changed.txt | grep -vxq '\.changeset/README\.md'; then
-                echo "Changeset present."
-              else
-                echo "::error::This PR changes shipped files but adds no changeset. Run \`yarn changeset\` and commit the file."
-                echo "Shipped files:"; printf '%s\n' "$shipped" | sed 's/^/  /'
-                failed=1
-              fi
-            else
+            if [ -z "$shipped" ]; then
               echo "Docs/agent/CI-only change: no changeset needed."
+            elif grep -E '^\.changeset/.+\.md$' changed.txt | grep -vxq '\.changeset/README\.md'; then
+              echo "Changeset present."
+            else
+              echo "::error::This PR changes shipped files but adds no changeset. Run \`yarn changeset\` and commit the file."
+              echo "Shipped files:"; printf '%s\n' "$shipped" | sed 's/^/  /'
+              failed=1
             fi
           fi
 
@@ -100,32 +123,34 @@ jobs:
 
   repo-checks:
     name: Repo checks
+    needs: detect
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Nothing to check
+        if: needs.detect.outputs.agent-rules != 'true' && needs.detect.outputs.lessons != 'true'
+        run: echo "No lessons or agent rules in this repository."
 
-      - name: Detect checks
-        id: detect
-        run: |
-          echo "lessons=$([ -f scripts/check-lessons.mjs ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "node=$([ -f .nvmrc ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.detect.outputs.agent-rules == 'true' || needs.detect.outputs.lessons == 'true'
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: inputs.agent-rules || steps.detect.outputs.lessons == 'true'
+        if: needs.detect.outputs.agent-rules == 'true' || needs.detect.outputs.lessons == 'true'
         with:
-          node-version-file: ${{ steps.detect.outputs.node == 'true' && '.nvmrc' || '' }}
-          node-version: ${{ steps.detect.outputs.node == 'true' && '' || '24' }}
+          node-version-file: ${{ needs.detect.outputs.nvmrc == 'true' && '.nvmrc' || '' }}
+          node-version: ${{ needs.detect.outputs.nvmrc == 'true' && '' || '24' }}
 
       - name: Lessons
-        if: steps.detect.outputs.lessons == 'true'
+        if: needs.detect.outputs.lessons == 'true'
         run: node scripts/check-lessons.mjs
 
       - name: Install dependencies
-        if: inputs.agent-rules
+        if: needs.detect.outputs.agent-rules == 'true'
         env:
           NPM_AUTH_TOKEN: ${{ github.token }}
         run: |
@@ -133,9 +158,5 @@ jobs:
           yarn install --immutable
 
       - name: sysvena-agent-rules check
-        if: inputs.agent-rules
+        if: needs.detect.outputs.agent-rules == 'true'
         run: yarn sysvena-agent-rules check
-
-      - name: Nothing else to check
-        if: ${{ !inputs.agent-rules && steps.detect.outputs.lessons != 'true' }}
-        run: echo "No lessons or agent rules in this repository."
