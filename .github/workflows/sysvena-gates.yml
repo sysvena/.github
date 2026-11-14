@@ -1,0 +1,141 @@
+name: sysvena gates
+
+# Shared PR gates for every sysvena repository. Call it from the repo's own
+# .github/workflows/ci.yml:
+#
+#   jobs:
+#     sysvena:
+#       uses: sysvena/.github/.github/workflows/sysvena-gates.yml@main
+#       with:
+#         changeset: true
+#
+# Workflows that upload artifacts set `retention-days: 7` (artifacts share the
+# 2 GB Packages storage; the org keeps logs for 30 days).
+
+on:
+  workflow_call:
+    inputs:
+      changeset:
+        description: Require a changeset when the PR changes shipped files.
+        type: boolean
+        default: true
+      agent-rules:
+        description: Run `sysvena-agent-rules check` (Open Mercato apps).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-title:
+    name: PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|chore|docs|refactor|test|perf|ci|build|revert)(\([a-z0-9][a-z0-9._-]*\))?!?: [^ ].*$'
+          if ! printf '%s' "$TITLE" | grep -Eq "$pattern"; then
+            echo "::error::PR title must be '<type>(<area>): <summary>' with type feat, fix, chore, docs, refactor, test, perf, ci, build or revert. Got: $TITLE"
+            exit 1
+          fi
+          if [ "${#TITLE}" -gt 72 ]; then
+            echo "::error::PR title is ${#TITLE} characters; keep it at 72 or fewer."
+            exit 1
+          fi
+          echo "PR title OK: $TITLE"
+
+  changes:
+    name: Changeset and regression test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check changed files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          REQUIRE_CHANGESET: ${{ inputs.changeset }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename' > changed.txt
+          gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' > touched.txt
+          echo "Changed files:"; sed 's/^/  /' touched.txt
+          failed=0
+
+          # Changeset: shipped files need a .changeset/*.md (docs, agent files and CI are exempt).
+          if [ "$REQUIRE_CHANGESET" = "true" ] && [[ "$HEAD_REF" != changeset-release/* ]]; then
+            shipped=$(grep -Ev '(\.md$|^docs/|^\.ai/|^\.github/|^\.changeset/)' touched.txt || true)
+            if [ -n "$shipped" ]; then
+              if grep -E '^\.changeset/.+\.md$' changed.txt | grep -vxq '\.changeset/README\.md'; then
+                echo "Changeset present."
+              else
+                echo "::error::This PR changes shipped files but adds no changeset. Run \`yarn changeset\` and commit the file."
+                echo "Shipped files:"; printf '%s\n' "$shipped" | sed 's/^/  /'
+                failed=1
+              fi
+            else
+              echo "Docs/agent/CI-only change: no changeset needed."
+            fi
+          fi
+
+          # Regression test: a PR labelled `bug` changes a test, unless the maintainer waived it.
+          if printf '%s' "$LABELS" | grep -q '"bug"'; then
+            if printf '%s' "$LABELS" | grep -q '"skip-regression-test"'; then
+              echo "Regression test waived by the maintainer (skip-regression-test)."
+            elif grep -Eq '(__tests__/|__integration__/|\.test\.[cm]?[jt]sx?$|\.spec\.[cm]?[jt]sx?$)' changed.txt; then
+              echo "Regression test present."
+            else
+              echo "::error::A PR labelled 'bug' must add or change a test that fails without the fix. Only the maintainer may waive this with 'skip-regression-test'."
+              failed=1
+            fi
+          fi
+          exit "$failed"
+
+  repo-checks:
+    name: Repo checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Detect checks
+        id: detect
+        run: |
+          echo "lessons=$([ -f scripts/check-lessons.mjs ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "node=$([ -f .nvmrc ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.agent-rules || steps.detect.outputs.lessons == 'true'
+        with:
+          node-version-file: ${{ steps.detect.outputs.node == 'true' && '.nvmrc' || '' }}
+          node-version: ${{ steps.detect.outputs.node == 'true' && '' || '24' }}
+
+      - name: Lessons
+        if: steps.detect.outputs.lessons == 'true'
+        run: node scripts/check-lessons.mjs
+
+      - name: Install dependencies
+        if: inputs.agent-rules
+        env:
+          NPM_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: sysvena-agent-rules check
+        if: inputs.agent-rules
+        run: yarn sysvena-agent-rules check
+
+      - name: Nothing else to check
+        if: ${{ !inputs.agent-rules && steps.detect.outputs.lessons != 'true' }}
+        run: echo "No lessons or agent rules in this repository."
