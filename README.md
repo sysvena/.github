@@ -13,17 +13,35 @@ can merge a PR that breaks them or push to the default branch directly.
 | `protect-default-branch` | all repositories | changes through a PR (squash only), linear history, no force push or deletion |
 | `require-sysvena-gates` | all except `gates-canary` | the gates (`sysvena-gates.yml`) at the pinned production commit |
 | `require-sysvena-gates-canary` | `gates-canary` | the gates at the commit under test |
-| `require-build` | custom property `ci-build` = `true` | the check `CI result` from GitHub Actions, branch up to date |
+| `require-build` | custom property `ci-build` = `true` | the check `CI result` from GitHub Actions, branch up to date; CodeQL code scanning results with no open alert (thresholds: all alerts, all security alerts) |
 
 A repository whose CI has a `CI result` job (it `needs` every other job and
 fails unless all succeeded) gets `ci-build` = `true`; only organization owners
 can change the property.
+
+The CodeQL check of default setup reports "success" even when it finds an
+alert; the ruleset rule is what blocks the merge.
 
 In an emergency an organization owner can set a ruleset to "Disabled" and back
 to "Active" afterwards; both changes are in the organization audit log. A PR
 opened by a workflow with `GITHUB_TOKEN` (for example the release PR) gets its
 runs in an approval-required state: approve them in the PR ("Approve workflows
 to run").
+
+## Security configuration
+
+The organization code security configuration `sysvena` is enforced on every
+repository and is the default for new ones. It uses GitHub Secret Protection
+and GitHub Code Security (one active committer each) and turns on:
+
+- secret scanning with push protection (a push that contains a secret is
+  refused with `GH013`), non-provider patterns and AI-detected generic secrets
+  as alerts;
+- CodeQL code scanning, default setup (languages detected per repository);
+- the dependency graph, Dependabot alerts and Dependabot security updates;
+- private vulnerability reporting stays off.
+
+Dependency review in the gates needs Code Security and the dependency graph.
 
 ## Shared PR gates
 
