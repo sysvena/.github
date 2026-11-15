@@ -9,6 +9,10 @@
 # Usage: tests/e2e/gates-e2e.sh <commit of sysvena/.github>
 # Needs: gh logged in as an org owner (scopes repo, admin:org and workflow), jq.
 # The production ruleset `require-sysvena-gates` is not changed.
+# The whole body is one { ...; exit; } group: bash reads it completely before
+# it runs any of it, so editing this file while it runs (for example by
+# switching branches in the same checkout) cannot change a running test.
+{
 set -euo pipefail
 
 org=sysvena
@@ -29,6 +33,7 @@ log() { printf '%s\n' "$*"; }
 pass() { log "  ok     - $*"; }
 fail() { log "  not ok - $*"; failures=$((failures + 1)); }
 
+# shellcheck disable=SC2329 # called by the EXIT trap
 cleanup() {
   local pr branch
   for pr in "${prs[@]}"; do
@@ -239,3 +244,5 @@ else
   log "FAIL: $failures check(s) failed for $source_repo@$candidate."
   exit 1
 fi
+exit
+}

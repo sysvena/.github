@@ -153,6 +153,11 @@ excludes it.
 4. **Roll back** if needed: `scripts/gates-promote.sh --rollback <previous
    commit>` (no end-to-end test: an older version can fail checks added later).
 
+Run only one end-to-end test at a time: they share the canary ruleset. Both
+scripts are one `{ ...; exit; }` group, so bash reads them completely before it
+runs them and switching branches or editing them during a run cannot change a
+running test (`tests/scripts/edit-safe.sh`, run in CI, checks this).
+
 Both scripts need `gh` logged in as an org owner (scopes `repo`, `admin:org`
 and `workflow`, for the test PR that adds a workflow file) and `jq`.
 

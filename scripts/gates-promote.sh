@@ -13,6 +13,10 @@
 # was in production before (an older version can fail checks that the test
 # added later, such as the gates version line).
 # Needs: gh logged in as an org owner (scopes repo, admin:org and workflow), jq.
+# The whole body is one { ...; exit; } group: bash reads it completely before
+# it runs any of it, so editing this file while it runs (for example by
+# switching branches in the same checkout) cannot change a running test.
+{
 set -euo pipefail
 
 org=sysvena
@@ -58,3 +62,5 @@ now=$(gh api "orgs/$org/rulesets/$ruleset_id" --jq '.rules[] | select(.type == "
 
 echo "$production_ruleset moved from $previous to $commit."
 echo "Roll back: $0 --rollback $previous"
+exit
+}

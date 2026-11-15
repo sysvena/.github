@@ -43,7 +43,10 @@ jobs:
           persist-credentials: false
 
       - name: Shellcheck the scripts
-        run: shellcheck tests/gates/run.sh tests/gates/stub/gh tests/e2e/*.sh scripts/*.sh
+        run: shellcheck tests/gates/run.sh tests/gates/stub/gh tests/e2e/*.sh scripts/*.sh tests/scripts/*.sh
+
+      - name: Check the scripts are safe to edit while they run
+        run: tests/scripts/edit-safe.sh
 
       - name: Run the gate tests
         run: tests/gates/run.sh
