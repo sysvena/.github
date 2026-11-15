@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Test stub for `gh api [--paginate] <path> [--jq <expr>]`.
+# Serves "$FIX/pr.json" for repos/*/pulls/<n> and "$FIX/files.json" for
+# repos/*/pulls/<n>/files, and applies --jq the way gh does (strings raw).
+set -euo pipefail
+path=""
+expr=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    api | --paginate) ;;
+    --jq) expr="$2"; shift ;;
+    *) path="$1" ;;
+  esac
+  shift
+done
+case "$path" in
+  repos/*/pulls/*/files) file="$FIX/files.json" ;;
+  repos/*/pulls/*) file="$FIX/pr.json" ;;
+  *) echo "gh stub: unexpected call: $path" >&2; exit 2 ;;
+esac
+if [ -n "$expr" ]; then
+  jq -r "$expr" "$file"
+else
+  cat "$file"
+fi
