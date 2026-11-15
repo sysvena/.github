@@ -94,9 +94,9 @@ jobs:
             echo "::error::PR title must be one line."
             exit 1
           fi
-          pattern='^(feat|fix|chore|docs|refactor|test|perf|ci|build|revert)(\([a-z0-9][a-z0-9._-]*\))?!?: [^ ].*$'
+          pattern='^(feat|fix|chore|docs|style|refactor|test|perf|ci|build|revert)(\([a-z0-9][a-z0-9._-]*\))?!?: [^ ].*$'
           if ! printf '%s' "$TITLE" | grep -Eq "$pattern"; then
-            echo "::error::PR title must be '<type>(<area>): <summary>' with type feat, fix, chore, docs, refactor, test, perf, ci, build or revert. Got: $TITLE"
+            echo "::error::PR title must be '<type>(<area>): <summary>' with type feat, fix, chore, docs, style, refactor, test, perf, ci, build or revert (the types of @commitlint/config-conventional). Got: $TITLE"
             exit 1
           fi
           if [ "${#TITLE}" -gt 72 ]; then
