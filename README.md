@@ -60,7 +60,9 @@ re-run of an older run also checks the current PR (see "Re-running the gates").
 
 Gates:
 
-- **PR title** — `<type>(<area>): <summary>`, at most 72 characters.
+- **PR title** — `<type>(<area>): <summary>`, at most 72 characters; type
+  `feat`, `fix`, `chore`, `docs`, `style`, `refactor`, `test`, `perf`, `ci`,
+  `build` or `revert` (the types of `@commitlint/config-conventional`).
 - **Changeset** — when the repository uses Changesets (`.changeset/config.json`),
   a PR that changes shipped files adds `.changeset/*.md`. Markdown, `docs/`,
   `.ai/`, `.github/` and `.changeset/` changes are exempt, and so is the release
@@ -140,6 +142,7 @@ excludes it.
    `tests/e2e/gates-e2e.sh <commit>`. It points the canary ruleset at the commit,
    opens test PRs on `gates-canary` (valid change; `fix` title without a test,
    then a title edit and a `bug` label with re-runs; title without a type;
+   title type `style`;
    shipped file without a changeset; a vulnerable development dependency, a
    dependency under MPL-2.0, an action with no licence, a clean dependency and
    an own package with an exception for dependency review), checks each gate's result, the gates
