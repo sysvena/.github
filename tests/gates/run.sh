@@ -164,7 +164,7 @@ pr_case "a directory ending in tests/ (contests/) does not count" pass fail \
   "fix: handle empty input" "" "src/a.ts modified;docs/contests/a.ts modified"
 pr_case "a .test.md file does not count" pass fail \
   "fix: handle empty input" "" "src/a.ts modified;notes/a.test.md added"
-pr_case "chore title, no labels: no test needed" pass pass \
+pr_case "chore title, no labels: no test needed" pass fail \
   "chore: bump tooling" "" "src/a.ts modified"
 
 echo "# PR title"
