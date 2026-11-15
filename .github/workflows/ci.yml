@@ -42,8 +42,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Shellcheck the test scripts
-        run: shellcheck tests/gates/run.sh tests/gates/stub/gh
+      - name: Shellcheck the scripts
+        run: shellcheck tests/gates/run.sh tests/gates/stub/gh scripts/*.sh
 
       - name: Run the gate tests
         run: tests/gates/run.sh
