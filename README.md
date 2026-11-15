@@ -36,7 +36,10 @@ and GitHub Code Security (one active committer each) and turns on:
 
 - secret scanning with push protection (a push that contains a secret is
   refused with `GH013`), non-provider patterns and AI-detected generic secrets
-  as alerts;
+  as alerts, and validity checks;
+- delegated bypass for push protection with no bypass reviewers: only
+  organization owners can bypass a block; anyone else sends a bypass request
+  that an owner approves or denies;
 - CodeQL code scanning, default setup (languages detected per repository);
 - the dependency graph, Dependabot alerts and Dependabot security updates;
 - private vulnerability reporting stays off.
