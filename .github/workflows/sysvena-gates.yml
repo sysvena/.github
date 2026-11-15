@@ -8,12 +8,19 @@ name: sysvena gates
 #   - agent rules: package.json depends on `@sysvena/agent-rules`
 #   - lessons:     `scripts/check-lessons.mjs` exists
 #
+# A ruleset runs a workflow only on the default `pull_request` activity types
+# (opened, synchronize, reopened) and ignores `types`, so none are set here.
+# The gates read the title, labels and files of the PR from the API, not from
+# the event payload, so a re-run of an older run checks the current PR. The
+# `detect` job reads the PR once and both gates use that one snapshot: the API
+# can return the previous state for a few seconds after a change, and separate
+# reads could then disagree. The log shows the snapshot that was checked.
+#
 # Workflows that upload artifacts set `retention-days: 7` (artifacts share the
 # 2 GB Packages storage; the org keeps logs for 30 days).
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 concurrency:
   group: sysvena-gates-${{ github.repository }}-${{ github.event.pull_request.number }}
@@ -33,7 +40,21 @@ jobs:
       agent-rules: ${{ steps.detect.outputs.agent-rules }}
       lessons: ${{ steps.detect.outputs.lessons }}
       nvmrc: ${{ steps.detect.outputs.nvmrc }}
+      pr: ${{ steps.pr.outputs.pr }}
     steps:
+      - name: Read the PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # One line of compact JSON: jq escapes any newline inside the title.
+          snapshot=$(gh api "repos/$REPO/pulls/$PR" --jq '{title: .title, labels: [.labels[].name]}' | jq -c .)
+          echo "PR snapshot: $snapshot"
+          echo "pr=$snapshot" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -51,13 +72,16 @@ jobs:
 
   pr-title:
     name: PR title
+    needs: detect
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Check the PR title
         env:
-          TITLE: ${{ github.event.pull_request.title }}
+          PR_SNAPSHOT: ${{ needs.detect.outputs.pr }}
         run: |
+          set -euo pipefail
+          TITLE=$(jq -r '.title' <<< "$PR_SNAPSHOT")
           pattern='^(feat|fix|chore|docs|refactor|test|perf|ci|build|revert)(\([a-z0-9][a-z0-9._-]*\))?!?: [^ ].*$'
           if ! printf '%s' "$TITLE" | grep -Eq "$pattern"; then
             echo "::error::PR title must be '<type>(<area>): <summary>' with type feat, fix, chore, docs, refactor, test, perf, ci, build or revert. Got: $TITLE"
@@ -81,10 +105,12 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           REQUIRE_CHANGESET: ${{ needs.detect.outputs.changeset }}
+          PR_SNAPSHOT: ${{ needs.detect.outputs.pr }}
         run: |
           set -euo pipefail
+          jq -r '.title' <<< "$PR_SNAPSHOT" > title.txt
+          jq -r '.labels[]' <<< "$PR_SNAPSHOT" > labels.txt
           gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename' > changed.txt
           gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' > touched.txt
           echo "Changed files:"; sed 's/^/  /' touched.txt
@@ -108,14 +134,21 @@ jobs:
             fi
           fi
 
-          # Regression test: a PR labelled `bug` changes a test, unless the maintainer waived it.
-          if printf '%s' "$LABELS" | grep -q '"bug"'; then
-            if printf '%s' "$LABELS" | grep -q '"skip-regression-test"'; then
-              echo "Regression test waived by the maintainer (skip-regression-test)."
+          # Regression test: a bug fix (title type `fix` or label `bug`) changes a test,
+          # unless the maintainer waived it.
+          reason=""
+          if grep -Eq '^fix(\([a-z0-9][a-z0-9._-]*\))?!?: ' title.txt; then
+            reason="title type 'fix'"
+          elif grep -qx 'bug' labels.txt; then
+            reason="label 'bug'"
+          fi
+          if [ -n "$reason" ]; then
+            if grep -qx 'skip-regression-test' labels.txt; then
+              echo "Bug fix ($reason): regression test waived by the maintainer (skip-regression-test)."
             elif grep -Eq '(__tests__/|__integration__/|\.test\.[cm]?[jt]sx?$|\.spec\.[cm]?[jt]sx?$)' changed.txt; then
-              echo "Regression test present."
+              echo "Bug fix ($reason): regression test present."
             else
-              echo "::error::A PR labelled 'bug' must add or change a test that fails without the fix. Only the maintainer may waive this with 'skip-regression-test'."
+              echo "::error::A bug fix ($reason) must add or change a test that fails without the fix. Only the maintainer may waive this with 'skip-regression-test'."
               failed=1
             fi
           fi
