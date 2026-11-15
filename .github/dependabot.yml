@@ -1,0 +1,39 @@
+# Version updates (sysvena/mercato-platform#15, 1.13b). Security updates are
+# on through the org security configuration and ignore the cooldown.
+#   - cooldown 5 days: the same supply-chain wait as Yarn's npmMinimalAgeGate
+#     in the app repositories;
+#   - minor and patch updates of an ecosystem in one PR, majors on their own;
+#   - label `dependencies` (the SDLC category; it must exist in the repo,
+#     Dependabot does not create a configured label);
+#   - commit message and PR title `build(deps): …`, which the PR title gate
+#     accepts.
+# A PR that changes .github/workflows/sysvena-gates.yml is a new version of
+# the gates: after the merge it goes through the release steps (README,
+# "Releasing a new version of the gates").
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      github-actions:
+        update-types: [minor, patch]
+
+  # The actionlint image CI runs (tools/actionlint/Dockerfile).
+  - package-ecosystem: docker
+    directory: /tools/actionlint
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: build
+      include: scope
