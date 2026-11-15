@@ -1,0 +1,13 @@
+# Temporary probe (4d review): a workflow without a permissions block, which
+# CodeQL reports. The PR must be blocked by the code scanning rule; never merge.
+name: Probe code scanning
+
+on:
+  pull_request:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "probe"
