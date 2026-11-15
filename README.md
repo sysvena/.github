@@ -63,10 +63,15 @@ Gates:
 - **PR title** — `<type>(<area>): <summary>`, at most 72 characters; type
   `feat`, `fix`, `chore`, `docs`, `style`, `refactor`, `test`, `perf`, `ci`,
   `build` or `revert` (the types of `@commitlint/config-conventional`).
-- **Changeset** — when the repository uses Changesets (`.changeset/config.json`),
-  a PR that changes shipped files adds `.changeset/*.md`. Markdown, `docs/`,
-  `.ai/`, `.github/` and `.changeset/` changes are exempt, and so is the release
-  PR (`changeset-release/*`).
+- **Changeset** — when the base commit has `.changeset/config.json`, the gate
+  runs `changeset status --since <base>` with the repository's own Changesets
+  CLI (installed from its lockfile), the check the Changesets docs give for
+  requiring changesets. It fails when a package that Changesets versions
+  changed (any file in it, unless the config narrows `changedFilePatterns`;
+  private packages only with `privatePackages.version`) and the PR adds no
+  changeset. A change that releases nothing adds `yarn changeset --empty`. The
+  config comes from the base commit, so a PR cannot loosen its own check; the
+  release PR (`changeset-release/*`) is exempt.
 - **Regression test** — a bug fix (PR title type `fix` or label `bug`) changes a
   test (a file under `__tests__/`, `__integration__/` or `tests/`, or a
   `*.test.*` / `*.spec.*` JS or TS file), unless the maintainer applied
@@ -143,7 +148,8 @@ excludes it.
    opens test PRs on `gates-canary` (valid change; `fix` title without a test,
    then a title edit and a `bug` label with re-runs; title without a type;
    title type `style`;
-   shipped file without a changeset; a vulnerable development dependency, a
+   shipped file without a changeset; README change without and with an empty
+   changeset; a PR that loosens the changeset config; a vulnerable development dependency, a
    dependency under MPL-2.0, an action with no licence, a clean dependency and
    an own package with an exception for dependency review), checks each gate's result, the gates
    version the run reports, the canary's `.nvmrc` Node version and the lessons
