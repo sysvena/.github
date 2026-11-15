@@ -158,7 +158,8 @@ The org ruleset runs the gates from a pinned commit, so a PR here is checked by
 the pinned version, not by its own. `.github/workflows/ci.yml` therefore tests
 the PR's version:
 
-- **actionlint** (1.7.12, with shellcheck) over every workflow.
+- **actionlint** (with shellcheck) over every workflow. The image and its
+  version come from `tools/actionlint/Dockerfile` (see "Dependency updates").
 - **Gate tests** — `tests/gates/run.sh` runs the real `run:` blocks of
   `sysvena-gates.yml` against fixture pull requests, with a stub `gh`
   (`tests/gates/stub/gh`). Add a case there for every change to a gate.
@@ -203,6 +204,26 @@ running test (`tests/scripts/edit-safe.sh`, run in CI, checks this).
 
 Both scripts need `gh` logged in as an org owner (scopes `repo`, `admin:org`
 and `workflow`, for the test PR that adds a workflow file) and `jq`.
+
+## Dependency updates
+
+`.github/dependabot.yml` turns on Dependabot version updates; security updates
+are on through the org security configuration.
+
+- **What:** the actions in the workflows (`github-actions`) and the actionlint
+  image (`docker`, `tools/actionlint/Dockerfile`). That file is only a version
+  source: CI runs the image its `FROM` line names, because Dependabot does not
+  update `uses: docker://` (dependabot/dependabot-core#8362). It lives outside
+  `.github/`, where Dependabot may change files only for `github-actions`
+  (dependabot/dependabot-core#15237).
+- **How:** weekly; a release must be 5 days old (`cooldown`, the same wait as
+  Yarn's `npmMinimalAgeGate` in the app repositories); minor and patch updates
+  of an ecosystem in one PR, majors on their own; label `dependencies`; title
+  `build(deps): …`. An action update changes the SHA pin, its version comment
+  and the workflow lockfile in the same PR.
+- **Gates:** a Dependabot PR that changes `sysvena-gates.yml` is a new version
+  of the gates. Merge it like any other gate change, then release it (see
+  "Releasing a new version of the gates").
 
 ## Re-running the gates
 

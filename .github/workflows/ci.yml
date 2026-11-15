@@ -27,11 +27,21 @@ jobs:
         with:
           persist-credentials: false
 
-      # The image bundles shellcheck, so `run:` scripts are checked too.
+      # The image bundles shellcheck, so `run:` scripts are checked too. Its
+      # version lives in tools/actionlint/Dockerfile, which Dependabot updates
+      # (it does not update `uses: docker://`, dependabot/dependabot-core#8362).
       - name: Check workflow files
-        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
-        with:
-          args: -color
+        run: |
+          set -euo pipefail
+          file=tools/actionlint/Dockerfile
+          image=$(sed -n 's/^FROM[[:space:]]\{1,\}//p' "$file")
+          if [ "$(grep -c '^FROM' "$file")" -ne 1 ] \
+            || ! grep -Eq '^rhysd/actionlint:[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$' <<< "$image"; then
+            echo "::error::$file must have exactly one line 'FROM rhysd/actionlint:<version>@sha256:<digest>'."
+            exit 1
+          fi
+          echo "actionlint image: $image"
+          docker run --rm -v "$PWD:/repo:ro" -w /repo "$image" -color
 
   gate-tests:
     name: Gate tests
