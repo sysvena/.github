@@ -46,7 +46,8 @@ jobs:
         env:
           WORKFLOW_SHA: ${{ github.workflow_sha }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
-        run: echo "sysvena gates version: $WORKFLOW_SHA ($WORKFLOW_REF)"
+        run: |
+          echo "sysvena gates version: $WORKFLOW_SHA ($WORKFLOW_REF)"
 
       - name: Read the PR
         id: pr
