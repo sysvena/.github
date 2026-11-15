@@ -188,6 +188,11 @@ open_pr 3 "Add an e2e file" "src/e2e-$stamp-3.ts=export const x = 3" "$(changese
 run=$(wait_run "$PR_SHA" 1)
 expect "3" "$run" 1 failure success
 
+log "3b. Title type style"
+open_pr 3b "style: e2e formatting" "src/e2e-$stamp-3b.ts=export const x = 3" "$(changeset 3b)"
+run=$(wait_run "$PR_SHA" 1)
+expect "3b" "$run" 1 success success
+
 log "4. Shipped file without a changeset"
 open_pr 4 "feat: e2e change without a changeset" "src/e2e-$stamp-4.ts=export const x = 4"
 run=$(wait_run "$PR_SHA" 1)

@@ -242,6 +242,14 @@ pr_case "title over 72 characters fails" fail pass \
   "feat: $(printf 'a%.0s' $(seq 1 70))" "" "src/a.ts modified"
 pr_case "title without a type fails" fail pass \
   "Add export" "" "src/a.ts modified"
+for type in feat fix chore docs style refactor test perf ci build revert; do
+  pr_case "type '$type' is accepted" pass "$([ "$type" = fix ] && echo fail || echo pass)" \
+    "$type(ui): adjust spacing" "" "src/a.ts modified"
+done
+pr_case "type 'styles' is not 'style'" fail pass \
+  "styles: adjust spacing" "" "src/a.ts modified"
+pr_case "type 'Style' (capital) fails" fail pass \
+  "Style: adjust spacing" "" "src/a.ts modified"
 pr_case "multi-line title fails and stays one output line" fail pass \
   $'feat: first line\nsecond line' "" "src/a.ts modified"
 
