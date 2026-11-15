@@ -31,6 +31,7 @@ extract detect "Detect" "$tmp/detect.sh"
 extract detect "Read the PR" "$tmp/read.sh"
 extract pr-title "Check the PR title" "$tmp/title.sh"
 extract changes "Check changed files" "$tmp/changes.sh"
+extract changeset "Prepare the changeset check" "$tmp/cs-prepare.sh"
 extract dependency-review "Prepare licence exceptions" "$tmp/dr-prepare.sh"
 extract dependency-review "Check unknown and excepted licences" "$tmp/dr-check.sh"
 
@@ -48,16 +49,13 @@ report() { # <ok> <name> <detail>
 # pr_case <name> <expect title gate> <expect changes gate> <title> <labels> <files> [options]
 #   labels:  comma-separated label names
 #   files:   semicolon-separated "path status" pairs (status as in the API)
-#   options: changeset=true|false (default false), head=<branch> (default feature/x),
-#            message=<text the changes gate must print>
+#   options: message=<text the changes gate must print>
 pr_case() {
   local name=$1 want_title=$2 want_changes=$3 title=$4 labels=$5 files=$6
   shift 6
-  local changeset=false head=feature/x message="" opt
+  local message="" opt
   for opt in "$@"; do
     case "$opt" in
-      changeset=*) changeset=${opt#changeset=} ;;
-      head=*) head=${opt#head=} ;;
       message=*) message=${opt#message=} ;;
       *) echo "Unknown option: $opt" >&2; exit 2 ;;
     esac
@@ -89,8 +87,7 @@ pr_case() {
 
   local got_title=pass got_changes=pass
   (cd "$work" && PR_SNAPSHOT="$snapshot" bash -e "$tmp/title.sh" > "$work/title.log" 2>&1) || got_title=fail
-  (cd "$work" && FIX="$fix" PATH="$stub:$PATH" REPO=o/r PR=1 HEAD_REF="$head" \
-    REQUIRE_CHANGESET="$changeset" PR_SNAPSHOT="$snapshot" \
+  (cd "$work" && FIX="$fix" PATH="$stub:$PATH" REPO=o/r PR=1 PR_SNAPSHOT="$snapshot" \
     bash -e "$tmp/changes.sh" > "$work/changes.log" 2>&1) || got_changes=fail
 
   local ok=true detail=""
@@ -198,6 +195,77 @@ policy_case() {
   fi
 }
 
+# cs_case <name> <expect run=true|false> <base files> <head files> [options]
+#   files:   semicolon-separated "path=content" pairs; "path=-" removes the file
+#   options: head=<branch> (default feature/x), message=<text it must print>,
+#            config=<content .changeset/config.json must have afterwards>
+# Builds a repository with a base commit, a PR branch on top of it and the
+# merge commit the checkout of a PR gives, then runs "Prepare the changeset
+# check" in it.
+cs_case() {
+  local name=$1 want=$2 base_files=$3 head_files=$4
+  shift 4
+  local head=feature/x message="" config="" opt
+  for opt in "$@"; do
+    case "$opt" in
+      head=*) head=${opt#head=} ;;
+      message=*) message=${opt#message=} ;;
+      config=*) config=${opt#config=} ;;
+      *) echo "Unknown option: $opt" >&2; exit 2 ;;
+    esac
+  done
+  local repo="$tmp/cs-repo"
+  rm -rf "$repo"
+  mkdir -p "$repo"
+  apply_files() { # <files>
+    local spec path
+    local -a specs
+    IFS=';' read -r -a specs <<< "$1"
+    for spec in "${specs[@]}"; do
+      [ -n "$spec" ] || continue
+      path=${spec%%=*}
+      if [ "${spec#*=}" = - ]; then
+        rm -f "$repo/$path"
+      else
+        mkdir -p "$repo/$(dirname "$path")"
+        printf '%s\n' "${spec#*=}" > "$repo/$path"
+      fi
+    done
+  }
+  local gitc=(git -C "$repo" -c user.name=t -c user.email=t@t -c commit.gpgsign=false)
+  "${gitc[@]}" init -q -b main
+  apply_files "README.md=base;$base_files"
+  "${gitc[@]}" add -A && "${gitc[@]}" commit -qm base
+  "${gitc[@]}" switch -q -c pr
+  apply_files "src/pr.ts=pr;$head_files"
+  "${gitc[@]}" add -A && "${gitc[@]}" commit -qm pr
+  "${gitc[@]}" switch -q main
+  echo more > "$repo/MAIN.md"
+  "${gitc[@]}" add -A && "${gitc[@]}" commit -qm "main moves on"
+  "${gitc[@]}" merge -q --no-ff -m merge pr
+  local got_run
+  (cd "$repo" && HEAD_REF="$head" GITHUB_OUTPUT="$tmp/cs-output" bash -e "$tmp/cs-prepare.sh" > "$tmp/cs-log" 2>&1)
+  local status=$?
+  got_run=$(sed -n 's/^run=//p' "$tmp/cs-output" 2> /dev/null)
+  local want_base ok=true detail=""
+  want_base=$(git -C "$repo" rev-parse HEAD^1)
+  if [ "$status" != 0 ]; then
+    ok=false; detail+="step failed: $(cat "$tmp/cs-log")"$'\n'
+  elif [ "$got_run" != "$want" ]; then
+    ok=false; detail+="run=$got_run, want $want"$'\n'"$(cat "$tmp/cs-log")"$'\n'
+  elif ! grep -qx "base=$want_base" "$tmp/cs-output"; then
+    ok=false; detail+="base output is not the merge commit's first parent: $(cat "$tmp/cs-output")"$'\n'
+  fi
+  if [ -n "$message" ] && ! grep -qF -- "$message" "$tmp/cs-log"; then
+    ok=false; detail+="did not print: $message"$'\n'"$(cat "$tmp/cs-log")"$'\n'
+  fi
+  if [ -n "$config" ] && [ "$(cat "$repo/.changeset/config.json" 2> /dev/null)" != "$config" ]; then
+    ok=false; detail+="config is: $(cat "$repo/.changeset/config.json" 2> /dev/null), want: $config"$'\n'
+  fi
+  rm -f "$tmp/cs-output"
+  report "$ok" "$name" "$detail"
+}
+
 echo "# Regression test: bug fix = title type 'fix' or label 'bug'"
 pr_case "fix title without a test fails" pass fail \
   "fix: handle empty input" "" "src/a.ts modified" "message=A bug fix (title type 'fix')"
@@ -253,31 +321,31 @@ pr_case "type 'Style' (capital) fails" fail pass \
 pr_case "multi-line title fails and stays one output line" fail pass \
   $'feat: first line\nsecond line' "" "src/a.ts modified"
 
-echo "# Changeset (when .changeset/config.json exists)"
-pr_case "shipped file without a changeset fails" pass fail \
-  "feat: add export" "" "src/a.ts modified" "changeset=true" "message=adds no changeset"
-pr_case "shipped file with a changeset passes" pass pass \
-  "feat: add export" "" "src/a.ts modified;.changeset/brave-cats.md added" "changeset=true" "message=Changeset present"
-pr_case ".changeset/README.md is not a changeset" pass fail \
-  "feat: add export" "" "src/a.ts modified;.changeset/README.md modified" "changeset=true"
-pr_case "a removed changeset does not count" pass fail \
-  "feat: add export" "" "src/a.ts modified;.changeset/old.md removed" "changeset=true"
-pr_case "docs, agent and CI files need no changeset" pass pass \
-  "docs: explain setup" "" "README.md modified;docs/setup.md added;.ai/notes.md modified;.github/workflows/ci.yml modified" \
-  "changeset=true" "message=no changeset needed"
-pr_case "release PR needs no changeset" pass pass \
-  "chore(release): version packages" "" "packages/a/package.json modified" "changeset=true" "head=changeset-release/main" \
-  "message=Release PR"
-pr_case "no changesets in the repository: none needed" pass pass \
-  "feat: add export" "" "src/a.ts modified" "changeset=false" "message=changesets are not used"
+echo "# Changeset: what the check runs with"
+cfg_base='{"baseBranch": "main"}'
+cfg_loose='{"baseBranch": "main", "changedFilePatterns": ["nothing/**"]}'
+cs_case "base with Changesets: the check runs" true ".changeset/config.json=$cfg_base" "" \
+  "message=unchanged by this PR" "config=$cfg_base"
+cs_case "a PR that loosens the config is checked with the base config" true \
+  ".changeset/config.json=$cfg_base" ".changeset/config.json=$cfg_loose" \
+  "message=of the base commit" "config=$cfg_base"
+cs_case "a PR that removes Changesets is still checked" true \
+  ".changeset/config.json=$cfg_base" ".changeset/config.json=-" "config=$cfg_base"
+cs_case "a PR that adds Changesets: checked from the next PR" false "" ".changeset/config.json=$cfg_base" \
+  "message=applies from the next PR"
+cs_case "no Changesets: no check" false "" "" "message=changesets are not used"
+cs_case "release PR: no check" false ".changeset/config.json=$cfg_base" "" \
+  "head=changeset-release/main" "message=Release PR"
+cs_case "a branch only named like a release PR is checked" true ".changeset/config.json=$cfg_base" "" \
+  "head=feature/changeset-release/x"
 
 echo "# Detect"
-detect_case "empty repository" "changeset=false agent-rules=false lessons=false nvmrc=false"
-detect_case "changesets, lessons and .nvmrc" "changeset=true agent-rules=false lessons=true nvmrc=true" \
+detect_case "empty repository" "agent-rules=false lessons=false nvmrc=false"
+detect_case "lessons and .nvmrc (a changeset config is not detected here)" "agent-rules=false lessons=true nvmrc=true" \
   .changeset/config.json scripts/check-lessons.mjs .nvmrc
-detect_case "agent rules dependency in package.json" "changeset=false agent-rules=true lessons=false nvmrc=false" \
+detect_case "agent rules dependency in package.json" "agent-rules=true lessons=false nvmrc=false" \
   'package.json:{"devDependencies":{"@sysvena/agent-rules":"0.1.0"}}'
-detect_case "other @sysvena package is not agent rules" "changeset=false agent-rules=false lessons=false nvmrc=false" \
+detect_case "other @sysvena package is not agent rules" "agent-rules=false lessons=false nvmrc=false" \
   'package.json:{"devDependencies":{"@sysvena/agent-rules-extra":"1.0.0"}}'
 
 echo "# Dependency review: policy"

@@ -67,14 +67,18 @@ gh api "repos/$canary/labels/bug" > /dev/null 2>&1 \
 # PR. Sets PR_NUMBER and PR_SHA (globals, so the cleanup list stays in this
 # shell; do not call it in a subshell).
 open_pr() {
-  local n=$1 title=$2 branch="e2e/$stamp/$1" spec path
+  local n=$1 title=$2 branch="e2e/$stamp/$1" spec path old
+  local -a sha_arg
   shift 2
   gh api -X POST "repos/$canary/git/refs" -f "ref=refs/heads/$branch" -f "sha=$main_sha" > /dev/null
   branches+=("$branch")
   for spec in "$@"; do
     path=${spec%%=*}
+    # Replacing an existing file needs its blob sha.
+    sha_arg=()
+    old=$(gh api "repos/$canary/contents/$path?ref=$branch" --jq .sha 2> /dev/null) && sha_arg=(-f "sha=$old")
     gh api -X PUT "repos/$canary/contents/$path" -f "message=test: e2e $stamp $n" -f "branch=$branch" \
-      -f "content=$(printf '%s\n' "${spec#*=}" | base64 | tr -d '\n')" > /dev/null
+      -f "content=$(printf '%s\n' "${spec#*=}" | base64 | tr -d '\n')" "${sha_arg[@]}" > /dev/null
   done
   PR_SHA=$(gh api "repos/$canary/git/ref/heads/$branch" --jq .object.sha)
   PR_NUMBER=$(gh api -X POST "repos/$canary/pulls" -f "title=$title" -f "head=$branch" -f base=main \
@@ -126,16 +130,24 @@ check() {
   if "$@"; then pass "$what"; else fail "$what"; fi
 }
 
-# expect <label> <run id> <attempt> <PR title> <changes> [message the changes job prints]
+# expect <label> <run id> <attempt> <PR title> <regression test> [message the regression job prints]
 # Checks job results and what every run must show: the candidate version, the
-# canary's Node version and the lessons check. Dependency review must succeed
-# unless DR_WANT/DR_MESSAGE say otherwise (set them for one call only).
+# canary's Node version and the lessons check. Dependency review and Changeset
+# must succeed unless DR_WANT/DR_MESSAGE or CS_WANT/CS_MESSAGE say otherwise
+# (set them for one call only).
 expect() {
   local label=$1 run=$2 attempt=$3 want_title=$4 want_changes=$5 message=${6:-}
   local want_dr=${DR_WANT:-success} dr_message=${DR_MESSAGE:-}
-  local title changes repo dr detect_log changes_log repo_log dr_log
+  local want_cs=${CS_WANT:-success} cs_message=${CS_MESSAGE:-}
+  local title changes repo dr cs detect_log changes_log repo_log dr_log cs_log
   title=$(job_result "$run" "$attempt" "PR title")
-  changes=$(job_result "$run" "$attempt" "Changeset and regression test")
+  changes=$(job_result "$run" "$attempt" "Regression test")
+  cs=$(job_result "$run" "$attempt" "Changeset")
+  check "$label: changeset $want_cs (got $cs)" [ "$cs" = "$want_cs" ]
+  if [ -n "$cs_message" ]; then
+    cs_log=$(job_log "$run" "$attempt" "Changeset")
+    check "$label: changeset says \"$cs_message\"" grep -qF -- "$cs_message" <<< "$cs_log"
+  fi
   repo=$(job_result "$run" "$attempt" "Repo checks")
   dr=$(job_result "$run" "$attempt" "Dependency review")
   check "$label: dependency review $want_dr (got $dr)" [ "$dr" = "$want_dr" ]
@@ -144,12 +156,12 @@ expect() {
     check "$label: dependency review says \"$dr_message\"" grep -qF -- "$dr_message" <<< "$dr_log"
   fi
   detect_log=$(job_log "$run" "$attempt" "Detect checks")
-  changes_log=$(job_log "$run" "$attempt" "Changeset and regression test")
+  changes_log=$(job_log "$run" "$attempt" "Regression test")
   repo_log=$(job_log "$run" "$attempt" "Repo checks")
   check "$label: PR title $want_title (got $title)" [ "$title" = "$want_title" ]
-  check "$label: changes $want_changes (got $changes)" [ "$changes" = "$want_changes" ]
+  check "$label: regression test $want_changes (got $changes)" [ "$changes" = "$want_changes" ]
   if [ -n "$message" ]; then
-    check "$label: changes says \"$message\"" grep -qF -- "$message" <<< "$changes_log"
+    check "$label: regression test says \"$message\"" grep -qF -- "$message" <<< "$changes_log"
   fi
   check "$label: ran $candidate" grep -qF "sysvena gates version: $candidate" <<< "$detect_log"
   check "$label: repo checks success (got $repo)" [ "$repo" = success ]
@@ -172,7 +184,7 @@ changeset() { printf '.changeset/e2e-%s-%s.md=---\n---\n\nEnd-to-end test.' "$st
 log "1. Valid change"
 open_pr 1 "feat: e2e valid change" "src/e2e-$stamp-1.ts=export const x = 1" "$(changeset 1)"
 run=$(wait_run "$PR_SHA" 1)
-expect "1" "$run" 1 success success "Changeset present."
+CS_MESSAGE="Changeset check OK." expect "1" "$run" 1 success success "Not a bug fix"
 
 log "2. Bug fix: title type fix, then title edit, then label bug (live PR data)"
 open_pr 2 "fix: e2e fix without a test" "src/e2e-$stamp-2.ts=export const x = 2" "$(changeset 2)"
@@ -201,18 +213,37 @@ expect "3b" "$run" 1 success success
 log "4. Shipped file without a changeset"
 open_pr 4 "feat: e2e change without a changeset" "src/e2e-$stamp-4.ts=export const x = 4"
 run=$(wait_run "$PR_SHA" 1)
-expect "4" "$run" 1 success failure "adds no changeset"
+CS_WANT=failure CS_MESSAGE="adds no changeset" expect "4" "$run" 1 success success
 
-# package_json <dependencies JSON> <devDependencies JSON>
-package_json() { printf 'package.json={"name": "gates-canary-e2e", "private": true, "dependencies": %s, "devDependencies": %s}' "$1" "$2"; }
+log "4b. README change without a changeset (every file of the package counts)"
+open_pr 4b "docs: e2e readme change" "docs/e2e-$stamp-4b.md=e2e"
+run=$(wait_run "$PR_SHA" 1)
+CS_WANT=failure CS_MESSAGE="changeset --empty" expect "4b" "$run" 1 success success
+
+log "4c. README change with an empty changeset"
+open_pr 4c "docs: e2e readme change, nothing released" "docs/e2e-$stamp-4c.md=e2e" "$(changeset 4c)"
+run=$(wait_run "$PR_SHA" 1)
+CS_MESSAGE="Changeset check OK." expect "4c" "$run" 1 success success
+
+log "4d. A PR that loosens the changeset config is checked with the base config"
+loose=$(gh api "repos/$canary/contents/.changeset/config.json?ref=$main_sha" --jq .content | base64 -d \
+  | jq '.changedFilePatterns = ["nothing/**"]')
+open_pr 4d "feat: e2e loosened changeset config" ".changeset/config.json=$loose" "src/e2e-$stamp-4d.ts=export const x = 4"
+run=$(wait_run "$PR_SHA" 1)
+CS_WANT=failure CS_MESSAGE="of the base commit" expect "4d" "$run" 1 success success
+
+# package_json <n> <dependencies JSON> <devDependencies JSON>: a nested manifest
+# (the canary's own package.json and lockfile stay as they are; the dependency
+# graph reads nested manifests too).
+package_json() { printf 'e2e/%s/package.json={"name": "gates-canary-e2e", "private": true, "dependencies": %s, "devDependencies": %s}' "$1" "$2" "$3"; }
 
 log "5. Development dependency with a known vulnerability (lodash 4.17.20)"
-open_pr 5 "feat: e2e vulnerable dev dependency" "$(package_json '{}' '{"lodash": "4.17.20"}')" "$(changeset 5)"
+open_pr 5 "feat: e2e vulnerable dev dependency" "$(package_json 5 '{}' '{"lodash": "4.17.20"}')" "$(changeset 5)"
 run=$(wait_run "$PR_SHA" 1)
 DR_WANT=failure DR_MESSAGE=GHSA-35jh-r3h4-6jhm expect "5" "$run" 1 success success
 
 log "6. Dependency with a licence outside the allow list (axe-core, MPL-2.0)"
-open_pr 6 "feat: e2e dependency with a reviewed-only licence" "$(package_json '{"axe-core": "4.11.1"}' '{}')" "$(changeset 6)"
+open_pr 6 "feat: e2e dependency with a reviewed-only licence" "$(package_json 6 '{"axe-core": "4.11.1"}' '{}')" "$(changeset 6)"
 run=$(wait_run "$PR_SHA" 1)
 DR_WANT=failure DR_MESSAGE="Dependency review detected incompatible licenses." expect "6" "$run" 1 success success
 
@@ -224,12 +255,12 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: $canary@$main_sha"
+      - uses: $canary@$main_sha" "$(changeset 7)"
 run=$(wait_run "$PR_SHA" 1)
 DR_WANT=failure DR_MESSAGE="Added dependencies with no detected licence." expect "7" "$run" 1 success success
 
 log "8. Dependency with an allowed licence and no known vulnerability (ms 2.1.3, MIT)"
-open_pr 8 "feat: e2e clean dependency" "$(package_json '{"ms": "2.1.3"}' '{}')" "$(changeset 8)"
+open_pr 8 "feat: e2e clean dependency" "$(package_json 8 '{"ms": "2.1.3"}' '{}')" "$(changeset 8)"
 run=$(wait_run "$PR_SHA" 1)
 DR_MESSAGE="Every added dependency has a detected licence or a reviewed exception." expect "8" "$run" 1 success success
 
@@ -237,7 +268,7 @@ log "9. Own package with a reviewed exception (@sysvena/agent-rules, no licence 
 # In a nested manifest: a root package.json depending on it would also turn on
 # the agent rules check, which the canary does not use yet.
 open_pr 9 "feat: e2e own package" \
-  'e2e/package.json={"name": "gates-canary-e2e", "private": true, "devDependencies": {"@sysvena/agent-rules": "0.3.0"}}' \
+  'e2e/9/package.json={"name": "gates-canary-e2e", "private": true, "devDependencies": {"@sysvena/agent-rules": "0.3.0"}}' \
   "$(changeset 9)"
 run=$(wait_run "$PR_SHA" 1)
 DR_MESSAGE="Every added dependency has a detected licence or a reviewed exception." expect "9" "$run" 1 success success

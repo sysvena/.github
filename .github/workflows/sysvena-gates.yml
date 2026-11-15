@@ -4,7 +4,7 @@ name: sysvena gates
 # `require-sysvena-gates` requires this workflow on the default branch of every
 # repository, so GitHub runs it on each PR without any file in that repository.
 # It detects what to check from the repository itself:
-#   - changeset:   `.changeset/config.json` exists
+#   - changeset:   `.changeset/config.json` exists on the base commit
 #   - agent rules: package.json depends on `@sysvena/agent-rules`
 #   - lessons:     `scripts/check-lessons.mjs` exists
 # Dependency review runs in every repository (see the job for the policy).
@@ -37,7 +37,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      changeset: ${{ steps.detect.outputs.changeset }}
       agent-rules: ${{ steps.detect.outputs.agent-rules }}
       lessons: ${{ steps.detect.outputs.lessons }}
       nvmrc: ${{ steps.detect.outputs.nvmrc }}
@@ -72,7 +71,6 @@ jobs:
         run: |
           flag() { if eval "$1"; then echo true; else echo false; fi; }
           {
-            echo "changeset=$(flag '[ -f .changeset/config.json ]')"
             echo "agent-rules=$(flag '[ -f package.json ] && grep -q "\"@sysvena/agent-rules\"" package.json')"
             echo "lessons=$(flag '[ -f scripts/check-lessons.mjs ]')"
             echo "nvmrc=$(flag '[ -f .nvmrc ]')"
@@ -106,7 +104,7 @@ jobs:
           echo "PR title OK: $TITLE"
 
   changes:
-    name: Changeset and regression test
+    name: Regression test
     needs: detect
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -116,35 +114,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          REQUIRE_CHANGESET: ${{ needs.detect.outputs.changeset }}
           PR_SNAPSHOT: ${{ needs.detect.outputs.pr }}
         run: |
           set -euo pipefail
           jq -r '.title' <<< "$PR_SNAPSHOT" > title.txt
           jq -r '.labels[]' <<< "$PR_SNAPSHOT" > labels.txt
           gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename' > changed.txt
-          gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' > touched.txt
-          echo "Changed files:"; sed 's/^/  /' touched.txt
-          failed=0
-
-          # Changeset: shipped files need a .changeset/*.md (docs, agent files and CI are exempt).
-          if [ "$REQUIRE_CHANGESET" != "true" ]; then
-            echo "No .changeset/config.json: changesets are not used in this repository."
-          elif [[ "$HEAD_REF" == changeset-release/* ]]; then
-            echo "Release PR: no changeset needed."
-          else
-            shipped=$(grep -Ev '(\.md$|^docs/|^\.ai/|^\.github/|^\.changeset/)' touched.txt || true)
-            if [ -z "$shipped" ]; then
-              echo "Docs/agent/CI-only change: no changeset needed."
-            elif grep -E '^\.changeset/.+\.md$' changed.txt | grep -vxq '\.changeset/README\.md'; then
-              echo "Changeset present."
-            else
-              echo "::error::This PR changes shipped files but adds no changeset. Run \`yarn changeset\` and commit the file."
-              echo "Shipped files:"; printf '%s\n' "$shipped" | sed 's/^/  /'
-              failed=1
-            fi
-          fi
+          echo "Changed files:"; sed 's/^/  /' changed.txt
 
           # Regression test: a bug fix (title type `fix` or label `bug`) changes a test,
           # unless the maintainer waived it. A test is a file under __tests__/,
@@ -155,17 +131,97 @@ jobs:
           elif grep -qx 'bug' labels.txt; then
             reason="label 'bug'"
           fi
-          if [ -n "$reason" ]; then
-            if grep -qx 'skip-regression-test' labels.txt; then
-              echo "Bug fix ($reason): regression test waived by the maintainer (skip-regression-test)."
-            elif grep -Eq '(^|/)(__tests__|__integration__|tests)/|\.(test|spec)\.[cm]?[jt]sx?$' changed.txt; then
-              echo "Bug fix ($reason): regression test present."
-            else
-              echo "::error::A bug fix ($reason) must add or change a test that fails without the fix. Only the maintainer may waive this with 'skip-regression-test'."
-              failed=1
-            fi
+          if [ -z "$reason" ]; then
+            echo "Not a bug fix: no regression test needed."
+          elif grep -qx 'skip-regression-test' labels.txt; then
+            echo "Bug fix ($reason): regression test waived by the maintainer (skip-regression-test)."
+          elif grep -Eq '(^|/)(__tests__|__integration__|tests)/|\.(test|spec)\.[cm]?[jt]sx?$' changed.txt; then
+            echo "Bug fix ($reason): regression test present."
+          else
+            echo "::error::A bug fix ($reason) must add or change a test that fails without the fix. Only the maintainer may waive this with 'skip-regression-test'."
+            exit 1
           fi
-          exit "$failed"
+
+  # Changeset: the check Changesets documents for requiring changesets
+  # ("Automating Changesets", blocking: `changeset status --since <base>`). It
+  # fails when a package that Changesets versions changed and the PR adds no
+  # changeset; a change that releases nothing adds `yarn changeset --empty`.
+  # What counts as a change and which packages are versioned (private packages
+  # only with `privatePackages.version`) comes from `.changeset/config.json`
+  # of the BASE commit, so a PR cannot loosen its own check; a change to it
+  # applies from the next PR. The CLI is the repository's own, installed from
+  # its lockfile. The release PR (`changeset-release/*`) consumes changesets
+  # and is exempt, as in the Changesets docs.
+  changeset:
+    name: Changeset
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Prepare the changeset check
+        id: prepare
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          # The checkout is the PR's merge commit; its first parent is the base.
+          base=$(git rev-parse HEAD^1)
+          echo "Base commit: $base"
+          run=false
+          if [[ "$HEAD_REF" == changeset-release/* ]]; then
+            echo "Release PR: no changeset needed."
+          elif ! git cat-file -e "$base:.changeset/config.json" 2> /dev/null; then
+            if [ -f .changeset/config.json ]; then
+              echo "This PR adds Changesets: the changeset check applies from the next PR."
+            else
+              echo "No .changeset/config.json: changesets are not used in this repository."
+            fi
+          else
+            mkdir -p .changeset
+            git show "$base:.changeset/config.json" > .changeset/config.json
+            if git diff --quiet HEAD -- .changeset/config.json; then
+              echo "Using .changeset/config.json (unchanged by this PR)."
+            else
+              echo "Using .changeset/config.json of the base commit; this PR's change to it applies from the next PR."
+            fi
+            run=true
+          fi
+          { echo "run=$run"; echo "base=$base"; } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.prepare.outputs.run == 'true'
+        # Exactly one of the two inputs is non-empty (see Repo checks).
+        with:
+          node-version-file: ${{ needs.detect.outputs.nvmrc == 'true' && '.nvmrc' || '' }}
+          node-version: ${{ needs.detect.outputs.nvmrc != 'true' && '24' || '' }}
+
+      - name: Install dependencies
+        if: steps.prepare.outputs.run == 'true'
+        env:
+          NPM_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Check for a changeset
+        if: steps.prepare.outputs.run == 'true'
+        env:
+          BASE: ${{ steps.prepare.outputs.base }}
+        run: |
+          if yarn changeset status --since "$BASE"; then
+            echo "Changeset check OK."
+          else
+            echo "::error::A package that Changesets versions changed, but this PR adds no changeset. Run \`yarn changeset\` and commit the file, or \`yarn changeset --empty\` if the change releases nothing."
+            exit 1
+          fi
 
   repo-checks:
     name: Repo checks
