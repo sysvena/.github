@@ -6,7 +6,7 @@
 # pull requests and deletes their branches again. The commit may be on a PR
 # branch, so a change can be tested before it is merged.
 #
-# Usage: scripts/gates-e2e.sh <commit of sysvena/.github>
+# Usage: tests/e2e/gates-e2e.sh <commit of sysvena/.github>
 # Needs: gh logged in as an org owner (scopes repo and admin:org), jq.
 # The production ruleset `require-sysvena-gates` is not changed.
 set -euo pipefail

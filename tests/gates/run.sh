@@ -156,6 +156,14 @@ pr_case "a file under __tests__/ counts" pass pass \
   "fix: handle empty input" "" "src/a.ts modified;src/__tests__/a.ts modified"
 pr_case "a .spec.mjs file counts" pass pass \
   "fix: handle empty input" "" "src/a.mjs modified;src/a.spec.mjs added"
+pr_case "a file under tests/ at the root counts" pass pass \
+  "fix: handle empty input" "" "scripts/a.sh modified;tests/a.sh modified"
+pr_case "a file under a nested tests/ counts" pass pass \
+  "fix: handle empty input" "" "src/a.py modified;pkg/tests/test_a.py added"
+pr_case "a directory ending in tests/ (contests/) does not count" pass fail \
+  "fix: handle empty input" "" "src/a.ts modified;docs/contests/a.ts modified"
+pr_case "a .test.md file does not count" pass fail \
+  "fix: handle empty input" "" "src/a.ts modified;notes/a.test.md added"
 pr_case "chore title, no labels: no test needed" pass pass \
   "chore: bump tooling" "" "src/a.ts modified"
 

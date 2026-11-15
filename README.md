@@ -22,7 +22,9 @@ Gates:
   `.ai/`, `.github/` and `.changeset/` changes are exempt, and so is the release
   PR (`changeset-release/*`).
 - **Regression test** — a bug fix (PR title type `fix` or label `bug`) changes a
-  test, unless the maintainer applied `skip-regression-test`.
+  test (a file under `__tests__/`, `__integration__/` or `tests/`, or a
+  `*.test.*` / `*.spec.*` JS or TS file), unless the maintainer applied
+  `skip-regression-test`.
 - **Repo checks** — `scripts/check-lessons.mjs` when the repository has it, and
   `sysvena-agent-rules check` when `package.json` depends on
   `@sysvena/agent-rules`.
@@ -57,7 +59,7 @@ this repository, so a merge here changes nothing until that commit is moved.
 excludes it.
 
 1. **Before merge:** run the end-to-end test on the PR's head commit:
-   `scripts/gates-e2e.sh <commit>`. It points the canary ruleset at the commit,
+   `tests/e2e/gates-e2e.sh <commit>`. It points the canary ruleset at the commit,
    opens test PRs on `gates-canary` (valid change; `fix` title without a test,
    then a title edit and a `bug` label with re-runs; title without a type;
    shipped file without a changeset), checks each gate's result, the gates
