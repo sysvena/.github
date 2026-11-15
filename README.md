@@ -51,10 +51,41 @@ Gates:
 - **Repo checks** — `scripts/check-lessons.mjs` when the repository has it, and
   `sysvena-agent-rules check` when `package.json` depends on
   `@sysvena/agent-rules`.
+- **Dependency review** — in every repository, a PR must not add a dependency
+  with a known vulnerability (any severity, runtime and development scope) or
+  with a licence outside the policy (see "Dependency review").
 
 Each repository keeps its own `.github/workflows/ci.yml` only for checks that
 are specific to it (for example typecheck, test and build). Workflows that
 upload artifacts set `retention-days: 7`.
+
+## Dependency review
+
+The job runs `actions/dependency-review-action`, the way GitHub documents
+enforcing dependency review across an organization (a ruleset that requires a
+workflow running it). It needs GitHub Code Security on private repositories;
+the org security configuration `sysvena` enables it, with the dependency
+graph, on every repository. The policy and its sources are in the comment above
+the job in `sysvena-gates.yml`; in short:
+
+- **Vulnerabilities:** every severity, scopes runtime, development and unknown.
+  No exceptions; if a vulnerability cannot be fixed, its GHSA id goes into
+  `allow-ghsas` with a comment, through a PR here.
+- **Licences:** an allow list (`ALLOW_LICENSES`) of licences that both Google's
+  classification and the Blue Oak Council list rate permissive, plus
+  CC-BY-4.0 for data. A dependency whose licence the dependency graph cannot
+  detect fails too.
+- **Exceptions** (for example a weak-copyleft package such as one under MPL-2.0
+  or LGPL-3.0, or one with no detected licence) live only in
+  `LICENSE_EXCEPTIONS` in that job: `{purl, license, reason}`, with the purl
+  without a version and the licence as the dependency graph reports it
+  (`NOASSERTION` when none). An exception covers every version, but the gate
+  fails when an added version reports another licence. A repository cannot add
+  its own exceptions, so a PR cannot loosen its own check; an exception reaches
+  the repositories through the release steps below.
+
+The job summary of the run lists every dependency change, its licence and its
+OpenSSF Scorecard score.
 
 ## Testing the gates
 
@@ -85,7 +116,9 @@ excludes it.
    `tests/e2e/gates-e2e.sh <commit>`. It points the canary ruleset at the commit,
    opens test PRs on `gates-canary` (valid change; `fix` title without a test,
    then a title edit and a `bug` label with re-runs; title without a type;
-   shipped file without a changeset), checks each gate's result, the gates
+   shipped file without a changeset; a vulnerable development dependency, a
+   dependency under MPL-2.0, an action with no licence and a clean dependency
+   for dependency review), checks each gate's result, the gates
    version the run reports, the canary's `.nvmrc` Node version and the lessons
    check, and closes the PRs and deletes their branches. Extend it when a gate
    changes.
@@ -96,8 +129,8 @@ excludes it.
 4. **Roll back** if needed: `scripts/gates-promote.sh --rollback <previous
    commit>` (no end-to-end test: an older version can fail checks added later).
 
-Both scripts need `gh` logged in as an org owner (scopes `repo` and
-`admin:org`) and `jq`.
+Both scripts need `gh` logged in as an org owner (scopes `repo`, `admin:org`
+and `workflow`, for the test PR that adds a workflow file) and `jq`.
 
 ## Re-running the gates
 

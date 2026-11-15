@@ -7,7 +7,7 @@
 # branch, so a change can be tested before it is merged.
 #
 # Usage: tests/e2e/gates-e2e.sh <commit of sysvena/.github>
-# Needs: gh logged in as an org owner (scopes repo and admin:org), jq.
+# Needs: gh logged in as an org owner (scopes repo, admin:org and workflow), jq.
 # The production ruleset `require-sysvena-gates` is not changed.
 set -euo pipefail
 
@@ -123,13 +123,21 @@ check() {
 
 # expect <label> <run id> <attempt> <PR title> <changes> [message the changes job prints]
 # Checks job results and what every run must show: the candidate version, the
-# canary's Node version and the lessons check.
+# canary's Node version and the lessons check. Dependency review must succeed
+# unless DR_WANT/DR_MESSAGE say otherwise (set them for one call only).
 expect() {
   local label=$1 run=$2 attempt=$3 want_title=$4 want_changes=$5 message=${6:-}
-  local title changes repo detect_log changes_log repo_log
+  local want_dr=${DR_WANT:-success} dr_message=${DR_MESSAGE:-}
+  local title changes repo dr detect_log changes_log repo_log dr_log
   title=$(job_result "$run" "$attempt" "PR title")
   changes=$(job_result "$run" "$attempt" "Changeset and regression test")
   repo=$(job_result "$run" "$attempt" "Repo checks")
+  dr=$(job_result "$run" "$attempt" "Dependency review")
+  check "$label: dependency review $want_dr (got $dr)" [ "$dr" = "$want_dr" ]
+  if [ -n "$dr_message" ]; then
+    dr_log=$(job_log "$run" "$attempt" "Dependency review")
+    check "$label: dependency review says \"$dr_message\"" grep -qF -- "$dr_message" <<< "$dr_log"
+  fi
   detect_log=$(job_log "$run" "$attempt" "Detect checks")
   changes_log=$(job_log "$run" "$attempt" "Changeset and regression test")
   repo_log=$(job_log "$run" "$attempt" "Repo checks")
@@ -184,6 +192,36 @@ log "4. Shipped file without a changeset"
 open_pr 4 "feat: e2e change without a changeset" "src/e2e-$stamp-4.ts=export const x = 4"
 run=$(wait_run "$PR_SHA" 1)
 expect "4" "$run" 1 success failure "adds no changeset"
+
+# package_json <dependencies JSON> <devDependencies JSON>
+package_json() { printf 'package.json={"name": "gates-canary-e2e", "private": true, "dependencies": %s, "devDependencies": %s}' "$1" "$2"; }
+
+log "5. Development dependency with a known vulnerability (lodash 4.17.20)"
+open_pr 5 "feat: e2e vulnerable dev dependency" "$(package_json '{}' '{"lodash": "4.17.20"}')" "$(changeset 5)"
+run=$(wait_run "$PR_SHA" 1)
+DR_WANT=failure DR_MESSAGE=GHSA-35jh-r3h4-6jhm expect "5" "$run" 1 success success
+
+log "6. Dependency with a licence outside the allow list (axe-core, MPL-2.0)"
+open_pr 6 "feat: e2e dependency with a reviewed-only licence" "$(package_json '{"axe-core": "4.11.1"}' '{}')" "$(changeset 6)"
+run=$(wait_run "$PR_SHA" 1)
+DR_WANT=failure DR_MESSAGE="Dependency review detected incompatible licenses." expect "6" "$run" 1 success success
+
+log "7. Dependency with no detected licence (an action from the unlicensed canary)"
+# Never runs (workflow_dispatch only); the dependency graph still reads `uses:`.
+open_pr 7 "ci: e2e action with no licence" \
+  ".github/workflows/e2e-$stamp.yml=on: workflow_dispatch
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: $canary@$main_sha"
+run=$(wait_run "$PR_SHA" 1)
+DR_WANT=failure DR_MESSAGE="Added dependencies with no detected licence." expect "7" "$run" 1 success success
+
+log "8. Dependency with an allowed licence and no known vulnerability (ms 2.1.3, MIT)"
+open_pr 8 "feat: e2e clean dependency" "$(package_json '{"ms": "2.1.3"}' '{}')" "$(changeset 8)"
+run=$(wait_run "$PR_SHA" 1)
+DR_MESSAGE="Every added dependency has a detected licence or a reviewed exception." expect "8" "$run" 1 success success
 
 log ""
 if [ "$failures" -eq 0 ]; then
