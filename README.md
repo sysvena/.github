@@ -2,6 +2,29 @@
 
 Shared GitHub configuration for the `sysvena` organization.
 
+## Organization rulesets
+
+All on the default branch of the repositories they target, with **no bypass
+actors**: nobody, an organization owner or an agent acting as one included,
+can merge a PR that breaks them or push to the default branch directly.
+
+| Ruleset | Targets | Requires |
+| --- | --- | --- |
+| `protect-default-branch` | all repositories | changes through a PR (squash only), linear history, no force push or deletion |
+| `require-sysvena-gates` | all except `gates-canary` | the gates (`sysvena-gates.yml`) at the pinned production commit |
+| `require-sysvena-gates-canary` | `gates-canary` | the gates at the commit under test |
+| `require-build` | custom property `ci-build` = `true` | the check `CI result` from GitHub Actions, branch up to date |
+
+A repository whose CI has a `CI result` job (it `needs` every other job and
+fails unless all succeeded) gets `ci-build` = `true`; only organization owners
+can change the property.
+
+In an emergency an organization owner can set a ruleset to "Disabled" and back
+to "Active" afterwards; both changes are in the organization audit log. A PR
+opened by a workflow with `GITHUB_TOKEN` (for example the release PR) gets its
+runs in an approval-required state: approve them in the PR ("Approve workflows
+to run").
+
 ## Shared PR gates
 
 `.github/workflows/sysvena-gates.yml` holds the PR gates of every sysvena
