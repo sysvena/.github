@@ -223,6 +223,15 @@ open_pr 8 "feat: e2e clean dependency" "$(package_json '{"ms": "2.1.3"}' '{}')" 
 run=$(wait_run "$PR_SHA" 1)
 DR_MESSAGE="Every added dependency has a detected licence or a reviewed exception." expect "8" "$run" 1 success success
 
+log "9. Own package with a reviewed exception (@sysvena/agent-rules, no licence data)"
+# In a nested manifest: a root package.json depending on it would also turn on
+# the agent rules check, which the canary does not use yet.
+open_pr 9 "feat: e2e own package" \
+  'e2e/package.json={"name": "gates-canary-e2e", "private": true, "devDependencies": {"@sysvena/agent-rules": "0.3.0"}}' \
+  "$(changeset 9)"
+run=$(wait_run "$PR_SHA" 1)
+DR_MESSAGE="Every added dependency has a detected licence or a reviewed exception." expect "9" "$run" 1 success success
+
 log ""
 if [ "$failures" -eq 0 ]; then
   log "PASS: $source_repo@$candidate behaves as expected on $canary."

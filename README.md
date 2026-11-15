@@ -104,6 +104,9 @@ the job in `sysvena-gates.yml`; in short:
   fails when an added version reports another licence. A repository cannot add
   its own exceptions, so a PR cannot loosen its own check; an exception reaches
   the repositories through the release steps below.
+- **Own packages** (`@sysvena/*` from GitHub Packages) have no licence data in
+  the dependency graph, so each one needs an exception (`NOASSERTION`) when it
+  is first published.
 
 The job summary of the run lists every dependency change, its licence and its
 OpenSSF Scorecard score.
@@ -138,8 +141,8 @@ excludes it.
    opens test PRs on `gates-canary` (valid change; `fix` title without a test,
    then a title edit and a `bug` label with re-runs; title without a type;
    shipped file without a changeset; a vulnerable development dependency, a
-   dependency under MPL-2.0, an action with no licence and a clean dependency
-   for dependency review), checks each gate's result, the gates
+   dependency under MPL-2.0, an action with no licence, a clean dependency and
+   an own package with an exception for dependency review), checks each gate's result, the gates
    version the run reports, the canary's `.nvmrc` Node version and the lessons
    check, and closes the PRs and deletes their branches. Extend it when a gate
    changes.
