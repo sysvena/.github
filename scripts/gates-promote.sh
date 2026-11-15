@@ -12,7 +12,7 @@
 # --rollback skips the end-to-end test: it is for going back to a version that
 # was in production before (an older version can fail checks that the test
 # added later, such as the gates version line).
-# Needs: gh logged in as an org owner (scopes repo and admin:org), jq.
+# Needs: gh logged in as an org owner (scopes repo, admin:org and workflow), jq.
 set -euo pipefail
 
 org=sysvena

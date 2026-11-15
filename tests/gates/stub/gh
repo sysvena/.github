@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Test stub for `gh api [--paginate] <path> [--jq <expr>]`.
-# Serves "$FIX/pr.json" for repos/*/pulls/<n> and "$FIX/files.json" for
-# repos/*/pulls/<n>/files, and applies --jq the way gh does (strings raw).
+# Serves "$FIX/pr.json" for repos/*/pulls/<n>, "$FIX/files.json" for
+# repos/*/pulls/<n>/files and "$FIX/compare.json" for
+# repos/*/dependency-graph/compare/<base>...<head>, and applies --jq the way gh
+# does (strings raw). Every call is logged to "$FIX/calls".
 set -euo pipefail
 path=""
 expr=""
@@ -13,7 +15,9 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+printf '%s\n' "$path" >> "$FIX/calls"
 case "$path" in
+  repos/*/dependency-graph/compare/*...*) file="$FIX/compare.json" ;;
   repos/*/pulls/*/files) file="$FIX/files.json" ;;
   repos/*/pulls/*) file="$FIX/pr.json" ;;
   *) echo "gh stub: unexpected call: $path" >&2; exit 2 ;;

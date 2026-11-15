@@ -31,6 +31,8 @@ extract detect "Detect" "$tmp/detect.sh"
 extract detect "Read the PR" "$tmp/read.sh"
 extract pr-title "Check the PR title" "$tmp/title.sh"
 extract changes "Check changed files" "$tmp/changes.sh"
+extract dependency-review "Prepare licence exceptions" "$tmp/dr-prepare.sh"
+extract dependency-review "Check unknown and excepted licences" "$tmp/dr-check.sh"
 
 report() { # <ok> <name> <detail>
   if [ "$1" = true ]; then
@@ -131,6 +133,71 @@ detect_case() {
   fi
 }
 
+# dr_prepare_case <name> <expect pass|fail> <LICENSE_EXCEPTIONS> [purls output]
+# Runs "Prepare licence exceptions"; on pass, checks the `purls=` output.
+dr_prepare_case() {
+  local name=$1 want=$2 exceptions=$3 want_purls=${4-}
+  local work="$tmp/dr-prepare"
+  rm -rf "$work"
+  mkdir -p "$work"
+  local got=pass
+  (cd "$work" && LICENSE_EXCEPTIONS="$exceptions" GITHUB_OUTPUT="$work/output" \
+    bash -e "$tmp/dr-prepare.sh" > "$work/log" 2>&1) || got=fail
+  local ok=true detail=""
+  if [ "$got" != "$want" ]; then
+    ok=false
+    detail="got $got, want $want"$'\n'"$(cat "$work/log")"
+  elif [ "$want" = pass ]; then
+    if [ "$(wc -l < "$work/output")" != 1 ] || [ "$(cat "$work/output")" != "purls=$want_purls" ]; then
+      ok=false
+      detail="GITHUB_OUTPUT is not exactly 'purls=$want_purls': $(cat "$work/output")"
+    fi
+  fi
+  report "$ok" "$name" "$detail"
+}
+
+# dr_check_case <name> <expect pass|fail> <review outcome> <invalid-license-changes>
+#               <LICENSE_EXCEPTIONS> <compare API response> [message] [calls compare: yes|no]
+# Runs "Check unknown and excepted licences" with a stub dependency review API.
+dr_check_case() {
+  local name=$1 want=$2 outcome=$3 invalid=$4 exceptions=$5 compare=$6 message=${7:-} want_calls=${8:-}
+  local fix="$tmp/fixture" work="$tmp/work"
+  rm -rf "$fix" "$work"
+  mkdir -p "$fix" "$work"
+  printf '%s\n' "$compare" > "$fix/compare.json"
+  : > "$fix/calls"
+  local got=pass
+  (cd "$work" && FIX="$fix" PATH="$stub:$PATH" REPO=o/r BASE_SHA=b1 HEAD_SHA=h1 \
+    REVIEW_OUTCOME="$outcome" INVALID_LICENSES="$invalid" LICENSE_EXCEPTIONS="$exceptions" \
+    bash -e "$tmp/dr-check.sh" > "$work/log" 2>&1) || got=fail
+  local ok=true detail=""
+  if [ "$got" != "$want" ]; then
+    ok=false
+    detail+="got $got, want $want"$'\n'"$(cat "$work/log")"$'\n'
+  fi
+  if [ -n "$message" ] && ! grep -qF -- "$message" "$work/log"; then
+    ok=false
+    detail+="did not print: $message"$'\n'"$(cat "$work/log")"$'\n'
+  fi
+  case "$want_calls" in
+    yes) grep -qx 'repos/o/r/dependency-graph/compare/b1...h1' "$fix/calls" \
+           || { ok=false; detail+="did not call the compare API for b1...h1: $(cat "$fix/calls")"$'\n'; } ;;
+    no) [ ! -s "$fix/calls" ] || { ok=false; detail+="unexpected API calls: $(cat "$fix/calls")"$'\n'; } ;;
+  esac
+  report "$ok" "$name" "$detail"
+}
+
+# policy_case <name> <yq expression over the workflow> <expected value>
+policy_case() {
+  local got
+  got=$(yq "$2" "$workflow")
+  if [ "$got" = "$3" ]; then
+    report true "$1" ""
+  else
+    report false "$1" "got:  $got"$'\n'"want: $3"
+  fi
+}
+
 echo "# Regression test: bug fix = title type 'fix' or label 'bug'"
 pr_case "fix title without a test fails" pass fail \
   "fix: handle empty input" "" "src/a.ts modified" "message=A bug fix (title type 'fix')"
@@ -204,6 +271,91 @@ detect_case "agent rules dependency in package.json" "changeset=false agent-rule
   'package.json:{"devDependencies":{"@sysvena/agent-rules":"0.1.0"}}'
 detect_case "other @sysvena package is not agent rules" "changeset=false agent-rules=false lessons=false nvmrc=false" \
   'package.json:{"devDependencies":{"@sysvena/agent-rules-extra":"1.0.0"}}'
+
+echo "# Dependency review: policy"
+dr='.jobs."dependency-review"'
+review="$dr.steps[] | select(.name == \"Review dependency changes\")"
+policy_case "action pinned to the v5.0.0 commit" "$review | .uses" \
+  "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294"
+policy_case "fails on every severity" "$review | .with.\"fail-on-severity\"" "low"
+policy_case "fails in every scope" "$review | .with.\"fail-on-scopes\"" "runtime, development, unknown"
+# shellcheck disable=SC2016 # literal workflow expressions, not shell
+policy_case "uses the allow list" "$review | .with.\"allow-licenses\"" '${{ env.ALLOW_LICENSES }}'
+# shellcheck disable=SC2016 # literal workflow expressions, not shell
+policy_case "exceptions only from this workflow" "$review | .with.\"allow-dependencies-licenses\"" \
+  '${{ steps.exceptions.outputs.purls }}'
+policy_case "only the policy inputs are set" "$review | .with | keys | join(\",\")" \
+  "fail-on-severity,fail-on-scopes,allow-licenses,allow-dependencies-licenses"
+policy_case "allow list as decided" "$dr.env.ALLOW_LICENSES" \
+  "MIT, MIT-0, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD, BlueOak-1.0.0, Zlib, Python-2.0, AFL-2.1, AFL-3.0, CC0-1.0, Unlicense, CC-BY-4.0"
+policy_case "read-only token" "$dr.permissions | to_entries | map(.key + \"=\" + .value) | join(\",\")" "contents=read"
+policy_case "no checkout (a PR cannot change the policy)" "[$dr.steps[] | select(.uses // \"\" | test(\"checkout\"))] | length" "0"
+
+echo "# Dependency review: licence exceptions"
+dr_prepare_case "the exceptions in the workflow are valid" pass \
+  "$(yq "$dr.env.LICENSE_EXCEPTIONS" "$workflow")" \
+  "$(yq "$dr.env.LICENSE_EXCEPTIONS" "$workflow" | jq -r 'map(.purl) | join(", ")')"
+dr_prepare_case "no exceptions" pass '[]' ""
+dr_prepare_case "two exceptions become one purl list" pass \
+  '[{"purl":"pkg:npm/elkjs","license":"EPL-2.0","reason":"r"},{"purl":"pkg:npm/%40img/sharp-libvips-linux-x64","license":"LGPL-3.0-or-later","reason":"r"}]' \
+  "pkg:npm/elkjs, pkg:npm/%40img/sharp-libvips-linux-x64"
+dr_prepare_case "purl with a version fails" fail '[{"purl":"pkg:npm/elkjs@0.9.3","license":"EPL-2.0","reason":"r"}]'
+dr_prepare_case "purl with a comma fails" fail '[{"purl":"pkg:npm/a,pkg:npm/b","license":"MIT","reason":"r"}]'
+dr_prepare_case "purl with a newline fails" fail "$(jq -n '[{purl: "pkg:npm/a\npkg:npm/b", license: "MIT", reason: "r"}]')"
+dr_prepare_case "missing reason fails" fail '[{"purl":"pkg:npm/elkjs","license":"EPL-2.0"}]'
+dr_prepare_case "blank reason fails" fail '[{"purl":"pkg:npm/elkjs","license":"EPL-2.0","reason":" "}]'
+dr_prepare_case "empty licence fails" fail '[{"purl":"pkg:npm/elkjs","license":"","reason":"r"}]'
+dr_prepare_case "unknown key fails" fail '[{"purl":"pkg:npm/elkjs","license":"EPL-2.0","reason":"r","version":"1"}]'
+dr_prepare_case "not an array fails" fail '{"purl":"pkg:npm/elkjs","license":"EPL-2.0","reason":"r"}'
+dr_prepare_case "not JSON fails" fail 'pkg:npm/elkjs'
+
+echo "# Dependency review: unknown and excepted licences"
+none='{"forbidden":[],"unresolved":[],"unlicensed":[]}'
+ex_elk='[{"purl":"pkg:npm/elkjs","license":"EPL-2.0","reason":"r"}]'
+ex_unknown='[{"purl":"pkg:githubactions/acme/tool","license":"NOASSERTION","reason":"r"}]'
+add() { # <purl> <licence or null> [change type]
+  jq -n --arg p "$1" --argjson l "$2" --arg t "${3:-added}" \
+    '{change_type: $t, manifest: "package.json", ecosystem: "npm", name: ($p | sub("^pkg:[a-z]+/"; "") | sub("@[^/@]*$"; "")),
+      version: ($p | capture("@(?<v>[^/@]*)$").v // ""), package_url: $p, license: $l, scope: "runtime", vulnerabilities: []}'
+}
+dr_check_case "nothing to report passes without API calls" pass success "$none" '[]' '[]' \
+  "Every added dependency has a detected licence" no
+dr_check_case "unknown licence fails" fail failure \
+  '{"forbidden":[],"unresolved":[],"unlicensed":[{"manifest":"package.json","name":"mystery","version":"1.0.0","package_url":"pkg:npm/mystery@1.0.0"}]}' \
+  '[]' '[]' "package.json » mystery@1.0.0 (pkg:npm/mystery@1.0.0)"
+dr_check_case "unknown licence fails even when the action passed" fail success \
+  '{"forbidden":[],"unresolved":[],"unlicensed":[{"manifest":"w.yml","name":"acme/tool","version":"1","package_url":"pkg:githubactions/acme/tool@1"}]}' \
+  '[]' '[]' "no detected licence"
+dr_check_case "no licence result after a successful review fails" fail success "" '[]' '[]' \
+  "reported no licence result"
+dr_check_case "no licence result after a failed review defers to it" fail failure "" '[]' '[]' \
+  "failed before it reported licences"
+dr_check_case "unknown licence and changed exception: unknown reported too" fail success \
+  '{"forbidden":[],"unresolved":[],"unlicensed":[{"manifest":"package.json","name":"mystery","version":"1.0.0","package_url":"pkg:npm/mystery@1.0.0"}]}' \
+  "$ex_elk" "[$(add pkg:npm/elkjs@0.10.0 '"GPL-3.0-only"')]" "package.json » mystery@1.0.0"
+dr_check_case "compare API error fails" fail success "$none" "$ex_elk" 'not json'
+dr_check_case "excepted package with its approved licence passes" pass failure "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.9.3 '"EPL-2.0"')]" "still has its approved licence" yes
+dr_check_case "excepted package with a new licence fails" fail success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.10.0 '"GPL-3.0-only"')]" \
+  "package.json » elkjs@0.10.0: reports GPL-3.0-only, the exception approved EPL-2.0 (pkg:npm/elkjs)" yes
+dr_check_case "excepted package now with no licence fails" fail success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.10.0 null)]" "reports NOASSERTION, the exception approved EPL-2.0"
+dr_check_case "exception approved for NOASSERTION matches no licence" pass success "$none" "$ex_unknown" \
+  "[$(add pkg:githubactions/acme/tool@v2 null)]"
+dr_check_case "a removed version with another licence is ignored" pass success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.8.0 '"MIT"' removed), $(add pkg:npm/elkjs@0.9.3 '"EPL-2.0"')]"
+dr_check_case "an exception does not cover a package with a longer name" pass success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs-extra@1.0.0 '"MIT"')]"
+dr_check_case "purl match ignores case and qualifiers" fail success "$none" \
+  '[{"purl":"pkg:npm/%40img/sharp-libvips-linux-x64","license":"LGPL-3.0-or-later","reason":"r"}]' \
+  "[$(add 'pkg:npm/%40IMG/sharp-libvips-linux-x64@1.3.4?arch=x64' '"MIT"')]" "the exception approved LGPL-3.0-or-later"
+dr_check_case "scoped package purl without the version matches" fail success "$none" \
+  '[{"purl":"pkg:npm/%40img/sharp-libvips-linux-x64","license":"LGPL-3.0-or-later","reason":"r"}]' \
+  "[$(add 'pkg:npm/%40img/sharp-libvips-linux-x64@1.3.4' '"MIT"')]" "reports MIT"
+dr_check_case "unknown licence and changed exception are both reported" fail success \
+  '{"forbidden":[],"unresolved":[],"unlicensed":[{"manifest":"package.json","name":"mystery","version":"1.0.0","package_url":"pkg:npm/mystery@1.0.0"}]}' \
+  "$ex_elk" "[$(add pkg:npm/elkjs@0.10.0 '"GPL-3.0-only"')]" "reports GPL-3.0-only"
 
 echo
 echo "$passed passed, $failed failed"

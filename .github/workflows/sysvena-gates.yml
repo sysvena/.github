@@ -7,6 +7,7 @@ name: sysvena gates
 #   - changeset:   `.changeset/config.json` exists
 #   - agent rules: package.json depends on `@sysvena/agent-rules`
 #   - lessons:     `scripts/check-lessons.mjs` exists
+# Dependency review runs in every repository (see the job for the policy).
 #
 # A ruleset runs a workflow only on the default `pull_request` activity types
 # (opened, synchronize, reopened) and ignores `types`, so none are set here.
@@ -211,3 +212,131 @@ jobs:
       - name: sysvena-agent-rules check
         if: needs.detect.outputs.agent-rules == 'true'
         run: yarn sysvena-agent-rules check
+
+  # Dependency review: a PR must not add a dependency with a known
+  # vulnerability or with a licence outside the policy. GitHub's documented way
+  # to enforce dependency review across an organization is a ruleset that
+  # requires a workflow running actions/dependency-review-action; this is it.
+  # The action compares the base and head commits through the dependency
+  # review REST API, so the job needs no checkout and only `contents: read`.
+  #
+  # Policy (sysvena/mercato-platform#15, decided 2026-11-15):
+  #   - Vulnerabilities of every severity (`low` and up) in every scope
+  #     (runtime, development, unknown): development dependencies run in CI
+  #     and on developer machines too (OWASP CICD-SEC-3).
+  #   - Licences: an allow list (the action's maintainers deprecate deny lists,
+  #     actions/dependency-review-action#938). ALLOW_LICENSES holds the
+  #     licences that both Google's classification (notice or unencumbered)
+  #     and the Blue Oak Council list (Bronze or better) rate permissive, plus
+  #     CC-BY-4.0 for data. Everything else, including weak copyleft (MPL, EPL,
+  #     LGPL), JSON and WTFPL, needs a reviewed exception.
+  #   - A dependency with no detected licence fails. The action only reports it
+  #     (actions/dependency-review-action#672; PR #1170 adds an option), so the
+  #     step "Check unknown and excepted licences" fails it.
+  #   - Exceptions live only here, so a PR cannot loosen its own check, and a
+  #     change reaches the repositories through the gate release steps.
+  #     LICENSE_EXCEPTIONS is a JSON array of {purl, license, reason}:
+  #       purl    package URL without a version, e.g. "pkg:npm/elkjs",
+  #               written as the dependency graph writes it ("%40" for "@")
+  #       license the licence the dependency graph reports for it, as an SPDX
+  #               expression, or NOASSERTION when it reports none
+  #       reason  who reviewed it, when, and why it is acceptable
+  #     An exception covers every version of the package, but the check fails
+  #     when an added version reports a licence other than the approved one.
+  #   - Vulnerabilities have no exceptions. If one ever cannot be fixed, add
+  #     its GHSA id to `allow-ghsas` below with a comment, through a PR.
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      ALLOW_LICENSES: >-
+        MIT, MIT-0, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD,
+        BlueOak-1.0.0, Zlib, Python-2.0, AFL-2.1, AFL-3.0, CC0-1.0, Unlicense,
+        CC-BY-4.0
+      LICENSE_EXCEPTIONS: |
+        []
+    steps:
+      - name: Prepare licence exceptions
+        id: exceptions
+        run: |
+          set -euo pipefail
+          valid='type == "array" and all(.[];
+            type == "object" and (keys - ["license", "purl", "reason"]) == []
+            and (.purl | type == "string" and test("^pkg:[a-z]+/[^@?#,\\s]+$"))
+            and (.license | type == "string" and test("^[^\\n\\r]+$"))
+            and (.reason | type == "string" and test("\\S")))'
+          if ! jq -e "$valid" <<< "$LICENSE_EXCEPTIONS" > /dev/null 2>&1; then
+            echo "::error::LICENSE_EXCEPTIONS must be a JSON array of {purl, license, reason}, each purl 'pkg:<type>/<name>' without a version."
+            exit 1
+          fi
+          echo "Licence exceptions: $(jq length <<< "$LICENSE_EXCEPTIONS")"
+          jq -r '.[] | "  \(.purl): \(.license) (\(.reason))"' <<< "$LICENSE_EXCEPTIONS"
+          echo "purls=$(jq -r 'map(.purl) | join(", ")' <<< "$LICENSE_EXCEPTIONS")" >> "$GITHUB_OUTPUT"
+
+      - name: Review dependency changes
+        id: review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+          fail-on-scopes: runtime, development, unknown
+          allow-licenses: ${{ env.ALLOW_LICENSES }}
+          allow-dependencies-licenses: ${{ steps.exceptions.outputs.purls }}
+
+      - name: Check unknown and excepted licences
+        if: ${{ !cancelled() && steps.exceptions.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+          INVALID_LICENSES: ${{ steps.review.outputs.invalid-license-changes }}
+        run: |
+          set -euo pipefail
+          failed=0
+
+          # Unknown licences: the action lists them under `unlicensed` (after it
+          # has also asked GitHub for the licence of the source repository) and
+          # leaves excepted packages out.
+          if [ -z "$INVALID_LICENSES" ]; then
+            if [ "$REVIEW_OUTCOME" = success ]; then
+              echo "::error::Dependency review succeeded but reported no licence result."
+            else
+              echo "::error::Dependency review failed before it reported licences; see the step above."
+            fi
+            failed=1
+          else
+            unknown=$(jq -r '.unlicensed[]? | "  \(.manifest) » \(.name)@\(.version) (\(.package_url))"' <<< "$INVALID_LICENSES")
+            if [ -n "$unknown" ]; then
+              echo "::error::Added dependencies with no detected licence. Find out the licence; if it is acceptable, add a reviewed exception (license NOASSERTION) to LICENSE_EXCEPTIONS in sysvena/.github."
+              printf '%s\n' "$unknown"
+              failed=1
+            else
+              echo "Every added dependency has a detected licence or a reviewed exception."
+            fi
+          fi
+
+          # Excepted packages must still have the licence that was approved.
+          if [ "$(jq length <<< "$LICENSE_EXCEPTIONS")" -gt 0 ]; then
+            gh api --paginate "repos/$REPO/dependency-graph/compare/$BASE_SHA...$HEAD_SHA" --jq '.[]' \
+              | jq -s . > dependency-changes.json
+            changed=$(jq -r --argjson ex "$LICENSE_EXCEPTIONS" '
+              def base: ascii_downcase | sub("[?#].*$"; "") | sub("@[^/@]*$"; "");
+              .[] | select(.change_type == "added") | . as $c
+              | ($ex[] | select((.purl | base) == ($c.package_url | base))) as $e
+              | ($c.license // "NOASSERTION") as $got
+              | select($got != $e.license)
+              | "  \($c.manifest) » \($c.name)@\($c.version): reports \($got), the exception approved \($e.license) (\($e.purl))"
+              ' dependency-changes.json)
+            if [ -n "$changed" ]; then
+              echo "::error::Excepted dependencies now report a different licence. Review the new licence and update the exception in sysvena/.github."
+              printf '%s\n' "$changed"
+              failed=1
+            else
+              echo "Every excepted dependency still has its approved licence."
+            fi
+          fi
+          exit "$failed"
