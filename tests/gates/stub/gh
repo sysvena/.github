@@ -1,10 +1,29 @@
 #!/usr/bin/env bash
-# Test stub for `gh api [--paginate] <path> [--jq <expr>]`.
-# Serves "$FIX/pr.json" for repos/*/pulls/<n>, "$FIX/files.json" for
+# Test stub for `gh api [--paginate] <path> [--jq <expr>]` and
+# `gh release download <tag> -R <repo> -p <pattern> -O <file> [--clobber]`.
+# `release download` copies "$FIX/asset" to <file> and logs
+# "release download <tag> <repo> <pattern>". `api` serves "$FIX/pr.json" for repos/*/pulls/<n>, "$FIX/files.json" for
 # repos/*/pulls/<n>/files and "$FIX/compare.json" for
 # repos/*/dependency-graph/compare/<base>...<head>, and applies --jq the way gh
 # does (strings raw). Every call is logged to "$FIX/calls".
 set -euo pipefail
+if [ "${1-}" = release ] && [ "${2-}" = download ]; then
+  tag=$3 repo="" pattern="" out=""
+  shift 3
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -R) repo=$2; shift ;;
+      -p) pattern=$2; shift ;;
+      -O) out=$2; shift ;;
+      --clobber) ;;
+      *) echo "gh stub: unexpected release download argument: $1" >&2; exit 2 ;;
+    esac
+    shift
+  done
+  printf 'release download %s %s %s\n' "$tag" "$repo" "$pattern" >> "$FIX/calls"
+  cp "$FIX/asset" "$out"
+  exit 0
+fi
 path=""
 expr=""
 while [ $# -gt 0 ]; do
