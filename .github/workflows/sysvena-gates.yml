@@ -62,6 +62,7 @@ jobs:
       - name: Detect
         id: detect
         run: |
+          echo "PROBE-MARKER: PR version of the gates"
           flag() { if eval "$1"; then echo true; else echo false; fi; }
           {
             echo "changeset=$(flag '[ -f .changeset/config.json ]')"
