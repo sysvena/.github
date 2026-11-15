@@ -34,6 +34,9 @@ extract changes "Check changed files" "$tmp/changes.sh"
 extract changeset "Prepare the changeset check" "$tmp/cs-prepare.sh"
 extract dependency-review "Prepare licence exceptions" "$tmp/dr-prepare.sh"
 extract dependency-review "Check unknown and excepted licences" "$tmp/dr-check.sh"
+extract workflow-lockfile "Find workflows" "$tmp/lf-find.sh"
+extract workflow-lockfile "Install gh-actions-lock" "$tmp/lf-install.sh"
+extract workflow-lockfile "Verify the lockfile" "$tmp/lf-verify.sh"
 
 report() { # <ok> <name> <detail>
   if [ "$1" = true ]; then
@@ -193,6 +196,83 @@ policy_case() {
   else
     report false "$1" "got:  $got"$'\n'"want: $3"
   fi
+}
+
+# lf_find_case <name> <expected workflows=true|false> <files to create...>
+lf_find_case() {
+  local name=$1 want=$2
+  shift 2
+  local work="$tmp/lf-find" f
+  rm -rf "$work"
+  mkdir -p "$work"
+  for f in "$@"; do mkdir -p "$work/$(dirname "$f")"; : > "$work/$f"; done
+  local got
+  got=$(cd "$work" && GITHUB_OUTPUT="$work/.output" bash -e "$tmp/lf-find.sh" > /dev/null 2>&1 \
+    && cat "$work/.output")
+  if [ "$got" = "workflows=$want" ]; then
+    report true "$name" ""
+  else
+    report false "$name" "got:  $got"$'\n'"want: workflows=$want"
+  fi
+}
+
+# lf_install_case <name> <expect pass|fail> <asset content> <pinned SHA-256> [uname -s-m] [message]
+# Runs "Install gh-actions-lock" with the stub `gh release download` and a
+# stub `uname`.
+lf_install_case() {
+  local name=$1 want=$2 asset=$3 sha=$4 platform=${5:-Linux-x86_64} message=${6:-}
+  local fix="$tmp/fixture" work="$tmp/work" bin="$tmp/bin"
+  rm -rf "$fix" "$work" "$bin"
+  mkdir -p "$fix" "$work" "$bin"
+  printf '%s' "$asset" > "$fix/asset"
+  : > "$fix/calls"
+  # shellcheck disable=SC2016 # the stub's own $1, not expanded here
+  printf '#!/usr/bin/env bash\ncase "$1" in -s) echo %s ;; -m) echo %s ;; esac\n' \
+    "${platform%%-*}" "${platform#*-}" > "$bin/uname"
+  chmod +x "$bin/uname"
+  local got=pass
+  (cd "$work" && FIX="$fix" PATH="$bin:$stub:$PATH" LOCK_BIN="$work/gh-actions-lock" \
+    GH_ACTIONS_LOCK_VERSION=v9.9.9 GH_ACTIONS_LOCK_SHA256="$sha" \
+    bash -e "$tmp/lf-install.sh" > "$work/log" 2>&1) || got=fail
+  local ok=true detail=""
+  if [ "$got" != "$want" ]; then
+    ok=false; detail+="got $got, want $want"$'\n'"$(cat "$work/log")"$'\n'
+  fi
+  if [ -n "$message" ] && ! grep -qF -- "$message" "$work/log"; then
+    ok=false; detail+="did not print: $message"$'\n'"$(cat "$work/log")"$'\n'
+  fi
+  if [ "$want" = pass ]; then
+    grep -qx 'release download v9.9.9 github/gh-actions-lock linux-amd64' "$fix/calls" \
+      || { ok=false; detail+="did not download the pinned asset: $(cat "$fix/calls")"$'\n'; }
+    [ -x "$work/gh-actions-lock" ] || { ok=false; detail+="the binary is not executable"$'\n'; }
+  fi
+  report "$ok" "$name" "$detail"
+}
+
+# lf_verify_case <name> <expect pass|fail> <lockfile yes|no> <exit code> <JSON on stdout> [message]
+# Runs "Verify the lockfile" with a stub binary that prints the JSON, writes a
+# line to stderr and exits with the code.
+lf_verify_case() {
+  local name=$1 want=$2 lockfile=$3 code=$4 json=$5 message=${6:-}
+  local work="$tmp/work"
+  rm -rf "$work"
+  mkdir -p "$work/.github/workflows"
+  [ "$lockfile" = yes ] && : > "$work/.github/workflows/actions.lock"
+  printf '%s' "$json" > "$tmp/lf-stdout"
+  # shellcheck disable=SC2016 # the stub's own $*, not expanded here
+  printf '#!/usr/bin/env bash\n[ "$*" = "--verify --no-interactive --json" ] || { echo "bad args: $*" >&2; exit 9; }\ncat %q\necho "stub progress" >&2\nexit %s\n' \
+    "$tmp/lf-stdout" "$code" > "$tmp/lf-bin"
+  chmod +x "$tmp/lf-bin"
+  local got=pass
+  (cd "$work" && LOCK_BIN="$tmp/lf-bin" bash -e "$tmp/lf-verify.sh" > "$work/log" 2>&1) || got=fail
+  local ok=true detail=""
+  if [ "$got" != "$want" ]; then
+    ok=false; detail+="got $got, want $want"$'\n'"$(cat "$work/log")"$'\n'
+  fi
+  if [ -n "$message" ] && ! grep -qF -- "$message" "$work/log"; then
+    ok=false; detail+="did not print: $message"$'\n'"$(cat "$work/log")"$'\n'
+  fi
+  report "$ok" "$name" "$detail"
 }
 
 # cs_case <name> <expect run=true|false> <base files> <head files> [options]
@@ -432,6 +512,62 @@ dr_check_case "scoped package purl without the version matches" fail success "$n
 dr_check_case "unknown licence and changed exception are both reported" fail success \
   '{"forbidden":[],"unresolved":[],"unlicensed":[{"manifest":"package.json","name":"mystery","version":"1.0.0","package_url":"pkg:npm/mystery@1.0.0"}]}' \
   "$ex_elk" "[$(add pkg:npm/elkjs@0.10.0 '"GPL-3.0-only"')]" "reports GPL-3.0-only"
+
+echo "# Workflow lockfile: policy"
+policy_case "job reads contents only" '.jobs.workflow-lockfile.permissions | to_entries | map(.key + "=" + .value) | join(",")' "contents=read"
+policy_case "extension version pinned" '.jobs.workflow-lockfile.env.GH_ACTIONS_LOCK_VERSION | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")' "true"
+policy_case "extension SHA-256 pinned" '.jobs.workflow-lockfile.env.GH_ACTIONS_LOCK_SHA256 | test("^[0-9a-f]{64}$")' "true"
+# A tag ref in the gates breaks ruleset runs once the lockfile is used (tested
+# on gates-canary), and --no-narrow keeps SHA pins: every step `uses:` of the
+# gates is a full commit SHA.
+policy_case "every action in the gates is pinned to a commit SHA" \
+  '[.jobs[].steps[] | select(has("uses")) | .uses | test("^[^@]+@[0-9a-f]{40}$")] | all' "true"
+
+echo "# Workflow lockfile: when it applies"
+lf_find_case "no .github/workflows: no check" false README.md
+lf_find_case "empty .github/workflows: no check" false .github/workflows/README.md
+lf_find_case "a .yml workflow: check" true .github/workflows/ci.yml
+lf_find_case "a .yaml workflow: check" true .github/workflows/release.yaml
+lf_find_case "only a nested file (not run by GitHub): no check" false .github/workflows/sub/ci.yml
+lf_find_case "only a lockfile: no check" false .github/workflows/actions.lock
+
+echo "# Workflow lockfile: install"
+good_sha=$(printf 'binary' | sha256sum | cut -d' ' -f1)
+lf_install_case "pinned SHA-256 matches: installed" pass binary "$good_sha" "" "SHA-256 verified"
+lf_install_case "a different binary fails" fail tampered "$good_sha" "" "does not have the pinned SHA-256"
+lf_install_case "an empty download fails" fail "" "$good_sha" "" "does not have the pinned SHA-256"
+lf_install_case "a non-amd64 runner fails" fail binary "$good_sha" Linux-aarch64 "is linux-amd64"
+
+echo "# Workflow lockfile: verify"
+sha_ref='{"workflow":".github/workflows/ci.yml","category":"sha-as-ref","severity":"warning","dependency":"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1","detail":"pinned to a bare SHA"}'
+finding() { printf '{"workflow":".github/workflows/ci.yml","category":"%s","severity":"%s","dependency":"actions/checkout@v1","detail":"d"}' "$1" "$2"; }
+dep() { printf '{"nwo":"%s","ref":"%s","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","hash_algo":"sha1","direct":%s}' "$1" "$2" "$3"; }
+pinned=$(dep actions/checkout 3d3c42e5aac5ba805825da76410c181273ba90b1 true)
+# result <valid> <findings> [dependencies of .github/workflows/ci.yml]
+result() { printf '{"valid":%s,"findings":[%s],"workflows":[{"path":".github/workflows/ci.yml","dependencies":[%s]}]}' "$1" "$2" "${3-$pinned}"; }
+lf_verify_case "workflows without a lockfile fail" fail no 0 "$(result true "")" "has workflows but no .github/workflows/actions.lock"
+lf_verify_case "valid with no findings passes" pass yes 0 "$(result true "")" "Workflow lockfile OK"
+lf_verify_case "valid with only sha-as-ref passes" pass yes 0 "$(result true "$sha_ref,$sha_ref")" "2 sha-as-ref warning(s)"
+lf_verify_case "an error finding (exit 1) fails" fail yes 1 "$(result false "$(finding tag-commit-mismatch error)")" "does not verify (exit 1)"
+lf_verify_case "an unanswered API (reachability-unknown) fails" fail yes 1 \
+  "$(result false '{"category":"reachability-unknown","severity":"error","retryable":true,"dependency":"actions/checkout@v1"}')" "does not verify"
+lf_verify_case "a warning (ref-moved) fails" fail yes 0 "$(result true "$sha_ref,$(finding ref-moved warning)")" "1 finding(s) the policy does not accept"
+lf_verify_case "a container-image warning fails" fail yes 0 "$(result true "$(finding container-image warning)")" "the policy does not accept"
+lf_verify_case "a notice (fresh-tag, info) fails" fail yes 0 "$(result true "$(finding fresh-tag info)")" "the policy does not accept"
+lf_verify_case "valid false with exit 0 fails" fail yes 0 "$(result false "")" "does not verify (exit 0)"
+lf_verify_case "a non-zero exit with valid true fails" fail yes 1 "$(result true "")" "does not verify (exit 1)"
+lf_verify_case "a tool failure (exit 2, no JSON) fails" fail yes 2 "" "failed (exit 2) without a result"
+lf_verify_case "malformed JSON fails" fail yes 0 '{"valid":true}' "without a result"
+lf_verify_case "JSON without workflows fails" fail yes 0 '{"valid":true,"findings":[]}' "without a result"
+lf_verify_case "a direct tag ref fails" fail yes 0 "$(result true "" "$(dep actions/checkout v7.0.1 true)")" \
+  ".github/workflows/ci.yml: actions/checkout@v7.0.1"
+lf_verify_case "a direct short SHA ref fails" fail yes 0 "$(result true "" "$(dep actions/checkout 3d3c42e true)")" "Not pinned:"
+lf_verify_case "a direct branch ref fails" fail yes 0 "$(result true "" "$pinned,$(dep actions/setup-node main true)")" \
+  "actions/setup-node@main"
+lf_verify_case "a transitive tag ref passes" pass yes 0 "$(result true "" "$pinned,$(dep actions/cache v4.2.0 false)")" "Workflow lockfile OK"
+lf_verify_case "a workflow with no dependencies passes" pass yes 0 "$(result true "" "")" "Workflow lockfile OK"
+lf_verify_case "the findings are printed" fail yes 0 "$(result true "$(finding stale-workflow warning)")" "warning stale-workflow: actions/checkout@v1 d"
+lf_verify_case "the tool's log is printed" pass yes 0 "$(result true "")" "  stub progress"
 
 echo
 echo "$passed passed, $failed failed"
