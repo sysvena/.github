@@ -5,6 +5,8 @@ name: Probe code scanning
 on:
   pull_request:
 
+permissions: {}
+
 jobs:
   probe:
     runs-on: ubuntu-latest
