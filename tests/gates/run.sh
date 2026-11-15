@@ -555,6 +555,7 @@ lf_verify_case "a warning (ref-moved) fails" fail yes 0 "$(result true "$sha_ref
 lf_verify_case "a container-image warning fails" fail yes 0 "$(result true "$(finding container-image warning)")" "the policy does not accept"
 lf_verify_case "a notice (fresh-tag, info) fails" fail yes 0 "$(result true "$(finding fresh-tag info)")" "the policy does not accept"
 lf_verify_case "valid false with exit 0 fails" fail yes 0 "$(result false "")" "does not verify (exit 0)"
+lf_verify_case "a non-zero exit with valid true fails" fail yes 1 "$(result true "")" "does not verify (exit 1)"
 lf_verify_case "a tool failure (exit 2, no JSON) fails" fail yes 2 "" "failed (exit 2) without a result"
 lf_verify_case "malformed JSON fails" fail yes 0 '{"valid":true}' "without a result"
 lf_verify_case "JSON without workflows fails" fail yes 0 '{"valid":true,"findings":[]}' "without a result"
