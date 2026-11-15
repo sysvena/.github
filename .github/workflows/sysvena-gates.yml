@@ -42,6 +42,13 @@ jobs:
       nvmrc: ${{ steps.detect.outputs.nvmrc }}
       pr: ${{ steps.pr.outputs.pr }}
     steps:
+      - name: Gates version
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          echo "sysvena gates version: $WORKFLOW_SHA ($WORKFLOW_REF)"
+
       - name: Read the PR
         id: pr
         env:
@@ -178,9 +185,15 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: needs.detect.outputs.agent-rules == 'true' || needs.detect.outputs.lessons == 'true'
+        # Exactly one of the two inputs is non-empty: setup-node prefers
+        # node-version when both are set, and `cond && '' || x` is always x.
         with:
           node-version-file: ${{ needs.detect.outputs.nvmrc == 'true' && '.nvmrc' || '' }}
-          node-version: ${{ needs.detect.outputs.nvmrc == 'true' && '' || '24' }}
+          node-version: ${{ needs.detect.outputs.nvmrc != 'true' && '24' || '' }}
+
+      - name: Node version
+        if: needs.detect.outputs.agent-rules == 'true' || needs.detect.outputs.lessons == 'true'
+        run: echo "Node $(node --version)"
 
       - name: Lessons
         if: needs.detect.outputs.lessons == 'true'
