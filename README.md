@@ -31,6 +31,23 @@ Each repository keeps its own `.github/workflows/ci.yml` only for checks that
 are specific to it (for example typecheck, test and build). Workflows that
 upload artifacts set `retention-days: 7`.
 
+## Testing the gates
+
+The org ruleset runs the gates from a pinned commit, so a PR here is checked by
+the pinned version, not by its own. `.github/workflows/ci.yml` therefore tests
+the PR's version:
+
+- **actionlint** (1.7.12, with shellcheck) over every workflow.
+- **Gate tests** — `tests/gates/run.sh` runs the real `run:` blocks of
+  `sysvena-gates.yml` against fixture pull requests, with a stub `gh`
+  (`tests/gates/stub/gh`). Add a case there for every change to a gate.
+
+Run the tests locally with bash, jq and yq v4 (mikefarah):
+
+```sh
+tests/gates/run.sh
+```
+
 ## Re-running the gates
 
 `gh run rerun` cannot find a workflow from another repository (HTTP 404), so
