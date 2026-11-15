@@ -457,7 +457,7 @@ jobs:
           # GitHub runs only the YAML files directly in .github/workflows.
           found=""
           if [ -d .github/workflows ]; then
-            found=$(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+            found=$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
           fi
           if [ -z "$found" ]; then
             echo "No workflows: no lockfile needed."
