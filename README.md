@@ -44,5 +44,9 @@ run=$(gh api "repos/$repo/actions/runs?head_sha=$sha" \
 gh api -X POST "repos/$repo/actions/runs/$run/rerun"
 ```
 
+The API can return the previous state of a PR for a few seconds after a
+change. The `Detect checks` job logs the snapshot it checked (`PR snapshot:`);
+if it still shows the old title or labels, re-run again.
+
 Changes to the gates go through a PR here and apply to every repository at
 once.
