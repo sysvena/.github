@@ -2,7 +2,7 @@
 # Moves every sysvena repository to a new version of the gates.
 #
 # The commit must be on main of sysvena/.github. The script first runs the
-# end-to-end test (scripts/gates-e2e.sh) on exactly that commit, and moves the
+# end-to-end test (tests/e2e/gates-e2e.sh) on exactly that commit, and moves the
 # production ruleset `require-sysvena-gates` to it only when the test passes.
 # It prints the previous commit and the command to roll back to it.
 #
@@ -45,7 +45,7 @@ fi
 if [ "$rollback" = true ]; then
   echo "Rolling back to $commit without the end-to-end test."
 else
-  "$(dirname "$0")/gates-e2e.sh" "$commit"
+  "$(dirname "$0")/../tests/e2e/gates-e2e.sh" "$commit"
 fi
 
 gh api "orgs/$org/rulesets/$ruleset_id" \
