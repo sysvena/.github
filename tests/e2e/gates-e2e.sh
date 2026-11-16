@@ -217,7 +217,9 @@ expect() {
   check "$label: ran $candidate" grep -qF "sysvena gates version: $candidate" <<< "$detect_log"
   check "$label: repo checks success (got $repo)" [ "$repo" = success ]
   check "$label: Node v$node_wanted from .nvmrc" grep -qx "Node v$node_wanted" <<< "$repo_log"
-  check "$label: lessons check ran" grep -qF "check-lessons:" <<< "$repo_log"
+  # The step itself, not its output: the canary's stand-in and the lessons
+  # check of the Open Mercato template print different lines.
+  check "$label: lessons check ran" grep -qF "Run node scripts/check-lessons.mjs" <<< "$repo_log"
 }
 
 # wait_pr_state <pr> <jq filter that must be true>: waits until the API shows it.
