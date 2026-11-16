@@ -262,8 +262,8 @@ open_pr 5 "feat: e2e vulnerable dev dependency" "$(package_json 5 '{}' '{"lodash
 run=$(wait_run "$PR_SHA" 1)
 DR_WANT=failure DR_MESSAGE=GHSA-35jh-r3h4-6jhm expect "5" "$run" 1 success success
 
-log "6. Dependency with a licence outside the allow list (axe-core, MPL-2.0)"
-open_pr 6 "feat: e2e dependency with a reviewed-only licence" "$(package_json 6 '{"axe-core": "4.11.1"}' '{}')" "$(changeset 6)"
+log "6. Dependency with a licence outside the allow list (webextension-polyfill, MPL-2.0, no exception)"
+open_pr 6 "feat: e2e dependency with a reviewed-only licence" "$(package_json 6 '{"webextension-polyfill": "0.12.0"}' '{}')" "$(changeset 6)"
 run=$(wait_run "$PR_SHA" 1)
 DR_WANT=failure DR_MESSAGE="Dependency review detected incompatible licenses." expect "6" "$run" 1 success success
 
@@ -301,6 +301,18 @@ open_pr 9b "feat: e2e reviewed LGPL dependency" \
   "$(package_json 9b '{"@img/sharp-libvips-linux-x64": "1.3.4"}' '{}')" "$(changeset 9b)"
 run=$(wait_run "$PR_SHA" 1)
 DR_MESSAGE="Every excepted dependency still has its approved licence." expect "9b" "$run" 1 success success
+
+log "9c. Dependency with a reviewed compound licence (uri-js 4.4.1, BSD-2-Clause AND BSD-2-Clause-Views)"
+# Checks that an SPDX expression in an exception matches the dependency graph.
+open_pr 9c "feat: e2e reviewed compound licence" "$(package_json 9c '{"uri-js": "4.4.1"}' '{}')" "$(changeset 9c)"
+run=$(wait_run "$PR_SHA" 1)
+DR_MESSAGE="Every excepted dependency still has its approved licence." expect "9c" "$run" 1 success success
+
+log "9d. MPL and Windows sharp dependencies with reviewed exceptions (lightningcss 1.33.0, @img/sharp-win32-x64 0.35.5)"
+open_pr 9d "feat: e2e reviewed MPL and sharp dependencies" \
+  "$(package_json 9d '{"lightningcss": "1.33.0", "@img/sharp-win32-x64": "0.35.5"}' '{}')" "$(changeset 9d)"
+run=$(wait_run "$PR_SHA" 1)
+DR_MESSAGE="Every excepted dependency still has its approved licence." expect "9d" "$run" 1 success success
 
 # Workflow lockfile scenarios. The workflows never run (workflow_dispatch only).
 # The lockfiles are written as `gh actions-lock --no-narrow` v0.4.1 writes them;
