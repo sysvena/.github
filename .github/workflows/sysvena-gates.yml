@@ -379,7 +379,29 @@ jobs:
       LICENSE_EXCEPTIONS: |
         [
           {"purl": "pkg:npm/%40sysvena/agent-rules", "license": "NOASSERTION",
-           "reason": "Own proprietary package (sysvena), GitHub Packages; reviewed by the maintainer 2026-11-15."}
+           "reason": "Own proprietary package (sysvena), GitHub Packages; reviewed by the maintainer 2026-11-15."},
+          {"purl": "pkg:npm/%40sysvena/default-locale", "license": "NOASSERTION",
+           "reason": "Own proprietary package (sysvena), GitHub Packages; reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40img/sharp-libvips-darwin-arm64", "license": "LGPL-3.0-or-later",
+           "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40img/sharp-libvips-darwin-x64", "license": "LGPL-3.0-or-later",
+           "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40img/sharp-libvips-linux-arm", "license": "LGPL-3.0-or-later",
+           "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40img/sharp-libvips-linux-arm64", "license": "LGPL-3.0-or-later",
+           "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40img/sharp-libvips-linux-ppc64", "license": "LGPL-3.0-or-later",
+           "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40img/sharp-libvips-linux-riscv64", "license": "LGPL-3.0-or-later",
+           "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40img/sharp-libvips-linux-s390x", "license": "LGPL-3.0-or-later",
+           "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40img/sharp-libvips-linux-x64", "license": "LGPL-3.0-or-later",
+           "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40img/sharp-libvips-linuxmusl-arm64", "license": "LGPL-3.0-or-later",
+           "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40img/sharp-libvips-linuxmusl-x64", "license": "LGPL-3.0-or-later",
+           "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."}
         ]
     steps:
       - name: Prepare licence exceptions

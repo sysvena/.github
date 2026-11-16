@@ -294,6 +294,14 @@ open_pr 9 "feat: e2e own package" \
 run=$(wait_run "$PR_SHA" 1)
 DR_MESSAGE="Every added dependency has a detected licence or a reviewed exception." expect "9" "$run" 1 success success
 
+log "9b. LGPL dependency with a reviewed exception (@img/sharp-libvips-linux-x64, LGPL-3.0-or-later)"
+# Checks that the exception's purl and licence match what the dependency graph
+# reports for the prebuilt libvips that every Mercato app gets through sharp.
+open_pr 9b "feat: e2e reviewed LGPL dependency" \
+  "$(package_json 9b '{"@img/sharp-libvips-linux-x64": "1.3.4"}' '{}')" "$(changeset 9b)"
+run=$(wait_run "$PR_SHA" 1)
+DR_MESSAGE="Every excepted dependency still has its approved licence." expect "9b" "$run" 1 success success
+
 # Workflow lockfile scenarios. The workflows never run (workflow_dispatch only).
 # The lockfiles are written as `gh actions-lock --no-narrow` v0.4.1 writes them;
 # a valid one passes the gate, so scenario 10 also tests these fixtures.
