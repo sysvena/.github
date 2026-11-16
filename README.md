@@ -194,7 +194,7 @@ excludes it.
    shipped file without a changeset; README change without and with an empty
    changeset; a PR that loosens the changeset config; a vulnerable development dependency, a
    dependency under MPL-2.0, an action with no licence, a clean dependency and
-   an own package with an exception for dependency review), checks each gate's result, the gates
+   an own package and an LGPL package (prebuilt libvips of sharp) with an exception for dependency review), checks each gate's result, the gates
    version the run reports, the canary's `.nvmrc` Node version and the lessons
    check, and closes the PRs and deletes their branches. Extend it when a gate
    changes.
