@@ -54,8 +54,9 @@ default branch of every repository, so GitHub runs it on each pull request.
 Repositories need no file for it, and cannot switch it off.
 
 A ruleset runs the gates when a PR is opened, reopened or gets new commits.
-A label or title change alone does not run them; the next push does. The
-gates read the title, labels and files of the PR from the API, so a manual
+A label, title or description change alone does not run them; the next push
+does. The gates read the title, labels, description and files of the PR from
+the API, so a manual
 re-run of an older run also checks the current PR (see "Re-running the gates").
 
 Gates:
@@ -63,6 +64,12 @@ Gates:
 - **PR title** — `<type>(<area>): <summary>`, at most 72 characters; type
   `feat`, `fix`, `chore`, `docs`, `style`, `refactor`, `test`, `perf`, `ci`,
   `build` or `revert` (the types of `@commitlint/config-conventional`).
+- **PR description** — ends with the self-check of project rules §3: a
+  `Sources/tests:` part, then a `Quality:` part, each with content (bold labels
+  or headings; HTML comments do not count; for Quality, `None.` when there is no
+  gap). Release PRs (`changeset-release/*`) and Dependabot PRs are exempt. The
+  org PR template (`.github/pull_request_template.md`) has both parts; `gh pr
+  create --body` does not use it, so agents write them themselves.
 - **Changeset** — when the base commit has `.changeset/config.json`, the gate
   runs `changeset status --since <base>` with the repository's own Changesets
   CLI (installed from its lockfile), the check the Changesets docs give for
@@ -182,6 +189,7 @@ excludes it.
    `tests/e2e/gates-e2e.sh <commit>`. It points the canary ruleset at the commit,
    opens test PRs on `gates-canary` (valid change; `fix` title without a test,
    then a title edit and a `bug` label with re-runs; title without a type;
+   a description without the self-check, then edited, with a re-run;
    title type `style`;
    shipped file without a changeset; README change without and with an empty
    changeset; a PR that loosens the changeset config; a vulnerable development dependency, a
