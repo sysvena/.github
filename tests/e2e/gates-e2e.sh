@@ -302,6 +302,12 @@ open_pr 9b "feat: e2e reviewed LGPL dependency" \
 run=$(wait_run "$PR_SHA" 1)
 DR_MESSAGE="Every excepted dependency still has its approved licence." expect "9b" "$run" 1 success success
 
+log "9c. Dependency with a reviewed compound licence (uri-js 4.4.1, BSD-2-Clause AND BSD-2-Clause-Views)"
+# Checks that an SPDX expression in an exception matches the dependency graph.
+open_pr 9c "feat: e2e reviewed compound licence" "$(package_json 9c '{"uri-js": "4.4.1"}' '{}')" "$(changeset 9c)"
+run=$(wait_run "$PR_SHA" 1)
+DR_MESSAGE="Every excepted dependency still has its approved licence." expect "9c" "$run" 1 success success
+
 # Workflow lockfile scenarios. The workflows never run (workflow_dispatch only).
 # The lockfiles are written as `gh actions-lock --no-narrow` v0.4.1 writes them;
 # a valid one passes the gate, so scenario 10 also tests these fixtures.
