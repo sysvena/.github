@@ -382,6 +382,8 @@ jobs:
            "reason": "Own proprietary package (sysvena), GitHub Packages; reviewed by the maintainer 2026-11-15."},
           {"purl": "pkg:npm/%40sysvena/default-locale", "license": "NOASSERTION",
            "reason": "Own proprietary package (sysvena), GitHub Packages; reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/%40sysvena/module-boundaries", "license": "NOASSERTION",
+           "reason": "Own proprietary package (sysvena), GitHub Packages; reviewed by the maintainer 2026-11-16."},
           {"purl": "pkg:npm/axe-core", "license": "MPL-2.0",
            "reason": "Dependency of eslint-plugin-jsx-a11y (eslint-config-next), development only. MPL-2.0 is file-level weak copyleft; used unmodified. Reviewed by the maintainer 2026-11-16."},
           {"purl": "pkg:npm/lightningcss", "license": "MPL-2.0",
