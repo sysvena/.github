@@ -63,6 +63,12 @@ gh api "repos/$canary/labels/bug" > /dev/null 2>&1 \
   || gh api -X POST "repos/$canary/labels" -f name=bug -f color=d73a4a > /dev/null
 
 # --- Helpers ------------------------------------------------------------------
+# default_body: a PR description that passes the PR description gate.
+default_body() {
+  printf 'End-to-end test of %s@%s. Closed automatically.\n\n**Sources/tests:** %s\n\n**Quality:** None.\n' \
+    "$source_repo" "$candidate" "tests/e2e/gates-e2e.sh"
+}
+
 # open_pr <n> <title> <path=content>...: branch from main, one commit per file,
 # PR. Sets PR_NUMBER and PR_SHA (globals, so the cleanup list stays in this
 # shell; do not call it in a subshell).
@@ -82,7 +88,7 @@ open_pr() {
   done
   PR_SHA=$(gh api "repos/$canary/git/ref/heads/$branch" --jq .object.sha)
   PR_NUMBER=$(gh api -X POST "repos/$canary/pulls" -f "title=$title" -f "head=$branch" -f base=main \
-    -f "body=End-to-end test of $source_repo@$candidate. Closed automatically." --jq .number)
+    -f "body=${PR_BODY-$(default_body)}" --jq .number)
   prs+=("$PR_NUMBER")
 }
 
@@ -140,6 +146,7 @@ expect() {
   local want_dr=${DR_WANT:-success} dr_message=${DR_MESSAGE:-}
   local want_cs=${CS_WANT:-success} cs_message=${CS_MESSAGE:-}
   local want_lf=${LF_WANT:-success} lf_message=${LF_MESSAGE:-}
+  local want_desc=${DESC_WANT:-success} desc_message=${DESC_MESSAGE:-}
   local title changes repo dr cs lf detect_log changes_log repo_log dr_log cs_log lf_log
   title=$(job_result "$run" "$attempt" "PR title")
   changes=$(job_result "$run" "$attempt" "Regression test")
@@ -158,6 +165,12 @@ expect() {
   fi
   lf=$(job_result "$run" "$attempt" "Workflow lockfile")
   check "$label: workflow lockfile $want_lf (got $lf)" [ "$lf" = "$want_lf" ]
+  desc=$(job_result "$run" "$attempt" "PR description")
+  check "$label: PR description $want_desc (got $desc)" [ "$desc" = "$want_desc" ]
+  if [ -n "$desc_message" ]; then
+    desc_log=$(job_log "$run" "$attempt" "PR description")
+    check "$label: PR description says \"$desc_message\"" grep -qF -- "$desc_message" <<< "$desc_log"
+  fi
   if [ -n "$lf_message" ]; then
     lf_log=$(job_log "$run" "$attempt" "Workflow lockfile")
     check "$label: workflow lockfile says \"$lf_message\"" grep -qF -- "$lf_message" <<< "$lf_log"
@@ -337,6 +350,17 @@ open_pr 14 "ci: e2e action pinned to a tag" \
   "$(lf_lockfile 14 v7.0.1 v7.0.1 "$checkout_sha")" "$(changeset 14)"
 run=$(wait_run "$PR_SHA" 1)
 LF_WANT=failure LF_MESSAGE="Not pinned:" expect "14" "$run" 1 success success
+
+log "15. PR description without the self-check, then edited (live PR data)"
+PR_BODY="End-to-end test without the self-check. Closed automatically." \
+  open_pr 15 "feat: e2e description without the self-check" "src/e2e-$stamp-15.ts=export const x = 15" "$(changeset 15)"
+pr15=$PR_NUMBER sha15=$PR_SHA
+run15=$(wait_run "$sha15" 1)
+CS_MESSAGE="Changeset check OK." DESC_WANT=failure DESC_MESSAGE="must end with the self-check" expect "15a" "$run15" 1 success success
+gh api -X PATCH "repos/$canary/pulls/$pr15" -f "body=$(default_body)" > /dev/null
+wait_pr_state "$pr15" '.body | test("Quality:")'
+attempt=$(rerun "$run15"); wait_run "$sha15" "$attempt" > /dev/null
+DESC_MESSAGE="PR description has the self-check" expect "15b body edited, re-run" "$run15" "$attempt" success success
 
 log ""
 if [ "$failures" -eq 0 ]; then

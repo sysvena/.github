@@ -31,6 +31,7 @@ extract detect "Detect" "$tmp/detect.sh"
 extract detect "Read the PR" "$tmp/read.sh"
 extract pr-title "Check the PR title" "$tmp/title.sh"
 extract changes "Check changed files" "$tmp/changes.sh"
+extract pr-description "Check the PR description" "$tmp/description.sh"
 extract changeset "Prepare the changeset check" "$tmp/cs-prepare.sh"
 extract dependency-review "Prepare licence exceptions" "$tmp/dr-prepare.sh"
 extract dependency-review "Check unknown and excepted licences" "$tmp/dr-check.sh"
@@ -131,6 +132,46 @@ detect_case() {
   else
     report false "$name" "got:  $got"$'\n'"want: $want"
   fi
+}
+
+# desc_case <name> <expect pass|fail> <body> [head=<ref>] [author=<login>] [message=<text>]
+# Runs "Read the PR" on a fixture with this body, then "Check the PR description"
+# on the snapshot it wrote, as the workflow does.
+desc_case() {
+  local name=$1 want=$2 body=$3
+  shift 3
+  local head=feature/x author=someone message="" opt
+  for opt in "$@"; do
+    case "$opt" in
+      head=*) head=${opt#head=} ;;
+      author=*) author=${opt#author=} ;;
+      message=*) message=${opt#message=} ;;
+      *) echo "Unknown option: $opt" >&2; exit 2 ;;
+    esac
+  done
+  local fix="$tmp/fixture" work="$tmp/work"
+  rm -rf "$fix" "$work"
+  mkdir -p "$fix" "$work"
+  jq -n --arg body "$body" '{number: 1, state: "open", title: "docs: x", labels: [],
+    body: (if $body == "<null>" then null else $body end)}' > "$fix/pr.json"
+  if ! (cd "$work" && FIX="$fix" PATH="$stub:$PATH" REPO=o/r PR=1 GITHUB_OUTPUT="$work/output" \
+    bash -e "$tmp/read.sh" > "$work/read.log" 2>&1); then
+    report false "$name" "Read the PR failed: $(cat "$work/read.log")"
+    return
+  fi
+  local snapshot got=pass
+  snapshot=$(sed -n 's/^pr=//p' "$work/output")
+  (cd "$work" && PR_SNAPSHOT="$snapshot" HEAD_REF="$head" AUTHOR="$author" \
+    bash -e "$tmp/description.sh" > "$work/desc.log" 2>&1) || got=fail
+  local ok=true detail=""
+  if [ "$got" != "$want" ]; then
+    ok=false
+    detail="got $got, want $want"$'\n'"$(cat "$work/desc.log")"
+  elif [ -n "$message" ] && ! grep -qF -- "$message" "$work/desc.log"; then
+    ok=false
+    detail="did not print: $message"$'\n'"$(cat "$work/desc.log")"
+  fi
+  report "$ok" "$name" "$detail"
 }
 
 # dr_prepare_case <name> <expect pass|fail> <LICENSE_EXCEPTIONS> [purls output]
@@ -568,6 +609,36 @@ lf_verify_case "a transitive tag ref passes" pass yes 0 "$(result true "" "$pinn
 lf_verify_case "a workflow with no dependencies passes" pass yes 0 "$(result true "" "")" "Workflow lockfile OK"
 lf_verify_case "the findings are printed" fail yes 0 "$(result true "$(finding stale-workflow warning)")" "warning stale-workflow: actions/checkout@v1 d"
 lf_verify_case "the tool's log is printed" pass yes 0 "$(result true "")" "  stub progress"
+
+# PR description gate (sysvena/mercato-platform#15 row 6.7).
+nl=$'\n'
+footer="${nl}${nl}🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+desc_case "bold labels with content pass" pass "Text.${nl}${nl}**Sources/tests:** unit tests.${nl}${nl}**Quality:** None.${footer}" \
+  message="line 3"
+desc_case "heading labels with content on the next lines pass" pass \
+  "Text.${nl}${nl}## Sources/tests:${nl}- tests pass${nl}${nl}## Quality:${nl}None.${footer}"
+desc_case "headings without the colon's bold also pass" pass "## Sources/tests:${nl}x${nl}### Quality:${nl}None."
+desc_case "CRLF line ends pass" pass "**Sources/tests:** x"$'\r\n'"**Quality:** None."$'\r\n'
+desc_case "an empty description fails" fail "" message="'Sources/tests:' part, then a 'Quality:' part"
+desc_case "a null description fails" fail "<null>"
+desc_case "no Quality fails" fail "**Sources/tests:** tests.${footer}"
+desc_case "no Sources/tests fails" fail "**Quality:** None.${footer}"
+desc_case "Quality before Sources/tests fails" fail "**Quality:** None.${nl}**Sources/tests:** x" message="must come before"
+desc_case "empty Quality followed only by the attribution fails" fail "**Sources/tests:** x${nl}${nl}**Quality:**${footer}" \
+  message="each need content"
+desc_case "empty Quality followed by a heading fails" fail "**Sources/tests:** x${nl}**Quality:**${nl}## Notes${nl}text"
+desc_case "empty Sources/tests fails" fail "**Sources/tests:**${nl}${nl}**Quality:** None."
+desc_case "labels inside a line do not count" fail "See the **Sources/tests:** part and **Quality:** None."
+desc_case "a similar word is not a label" fail "**Sources/tests:** x${nl}**Quality first:** None."
+desc_case "text with \$(...) and backticks is data" pass "**Sources/tests:** \$(touch pwned) \`id\`${nl}**Quality:** None."
+tpl=$(cat .github/pull_request_template.md)
+desc_case "the unfilled PR template fails" fail "$tpl" message="each need content"
+desc_case "the filled PR template passes" pass \
+  "$(sed -e 's/^## Sources\/tests:$/&\n- ran tests/' -e 's/^## Quality:$/&\nNone./' .github/pull_request_template.md)"
+desc_case "a hint in an HTML comment is not content" fail "**Sources/tests:** <!-- x -->${nl}**Quality:** None."
+desc_case "a release PR is exempt" pass "" head=changeset-release/main message="Release PR"
+desc_case "a Dependabot PR is exempt" pass "Bumps x." author='dependabot[bot]' message="Dependabot PR"
+desc_case "a branch merely containing changeset-release is not exempt" fail "" head=feature/changeset-release/x
 
 echo
 echo "$passed passed, $failed failed"

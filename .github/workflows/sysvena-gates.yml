@@ -12,7 +12,7 @@ name: sysvena gates
 #
 # A ruleset runs a workflow only on the default `pull_request` activity types
 # (opened, synchronize, reopened) and ignores `types`, so none are set here.
-# The gates read the title, labels and files of the PR from the API, not from
+# The gates read the title, labels, body and files of the PR from the API, not from
 # the event payload, so a re-run of an older run checks the current PR. The
 # `detect` job reads the PR once and both gates use that one snapshot: the API
 # can return the previous state for a few seconds after a change, and separate
@@ -59,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           # One line of compact JSON: jq escapes any newline inside the title.
-          snapshot=$(gh api "repos/$REPO/pulls/$PR" --jq '{title: .title, labels: [.labels[].name]}' | jq -c .)
+          snapshot=$(gh api "repos/$REPO/pulls/$PR" --jq '{title: .title, labels: [.labels[].name], body: (.body // "")}' | jq -c .)
           echo "PR snapshot: $snapshot"
           echo "pr=$snapshot" >> "$GITHUB_OUTPUT"
 
@@ -103,6 +103,64 @@ jobs:
             exit 1
           fi
           echo "PR title OK: $TITLE"
+
+  # PR description: every PR ends with the self-check of project rules §3 and
+  # CODE_REVIEW.md: a "Sources/tests:" part, then a "Quality:" part, each with
+  # content. The label may be bold (**Sources/tests:**) or a heading
+  # (## Sources/tests:). Release PRs (`changeset-release/*`, written by the
+  # Changesets action) and Dependabot PRs are exempt: no agent writes them.
+  # Editing the description alone starts no run (see the header); re-run the
+  # job after the edit.
+  pr-description:
+    name: PR description
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the PR description
+        env:
+          PR_SNAPSHOT: ${{ needs.detect.outputs.pr }}
+          HEAD_REF: ${{ github.head_ref }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_REF" == changeset-release/* ]]; then
+            echo "Release PR ($HEAD_REF): no self-check needed."
+            exit 0
+          fi
+          if [ "$AUTHOR" = 'dependabot[bot]' ]; then
+            echo "Dependabot PR: no self-check needed."
+            exit 0
+          fi
+          # HTML comments (the PR template's hints) are not content.
+          jq -r '.body | gsub("(?s)<!--.*?-->"; "")' <<< "$PR_SNAPSHOT" | tr -d '\r' > body.txt
+          # Prints "<sources line> <quality line> <sources content> <quality content>"
+          # (line numbers of the first label of each kind, 0 when absent; content
+          # = 1 when non-blank text follows the label before the next label, the
+          # next heading, the "🤖 Generated with" attribution line or the end).
+          read -r s q sc qc < <(awk '
+            function label(name) { return $0 ~ "^(#+[ \t]+)?(\\*\\*)?" name ":(\\*\\*)?([ \t]|$)" }
+            {
+              rest = $0
+              if ($0 ~ /^(#|🤖)/ && !label("Sources/tests") && !label("Quality")) { part = ""; next }
+              if (label("Sources/tests") && !s) { s = NR; part = "s"; sub(/^.*Sources\/tests:(\*\*)?/, "", rest) }
+              else if (label("Quality") && !q) { q = NR; part = "q"; sub(/^.*Quality:(\*\*)?/, "", rest) }
+              if (rest ~ /[^ \t]/) { if (part == "s") sc = 1; else if (part == "q") qc = 1 }
+            }
+            END { print s + 0, q + 0, sc + 0, qc + 0 }' body.txt)
+          if [ "$s" = 0 ] || [ "$q" = 0 ]; then
+            echo "::error::The PR description must end with the self-check of project rules §3: a 'Sources/tests:' part, then a 'Quality:' part (bold or as headings)."
+            exit 1
+          fi
+          if [ "$s" -gt "$q" ]; then
+            echo "::error::In the PR description 'Sources/tests:' must come before 'Quality:'."
+            exit 1
+          fi
+          if [ "$sc" = 0 ] || [ "$qc" = 0 ]; then
+            echo "::error::'Sources/tests:' and 'Quality:' in the PR description each need content (for Quality, 'None.' when there is no gap)."
+            exit 1
+          fi
+          echo "PR description has the self-check (Sources/tests: line $s, Quality: line $q)."
 
   changes:
     name: Regression test
