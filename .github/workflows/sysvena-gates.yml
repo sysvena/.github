@@ -385,7 +385,21 @@ jobs:
       #     imports glob in build scripts only, jest is a dev tool. Reviewed
       #     by the maintainer 2026-11-17; re-check at the Mercato 0.10.0
       #     upgrade (plan sysvena/mercato-platform#2 step 5).
-      ALLOW_GHSAS: GHSA-3g3m-2fjr-6pw4
+      #   GHSA-g3hv-75wg-m249 (minimatch >= 7.0.0, < 11.0.1, moderate): an
+      #     attacker-controlled pattern makes the optimizer grow without
+      #     bound. Fixed only in minimatch 11, which removes APIs (makeRe,
+      #     regexp, AST); glob moved to it only in its major 14, so it cannot
+      #     be forced. Every Mercato 0.9.0 app gets 10 (jest through glob 13
+      #     and test-exclude, typescript-eslint 8.72, @ts-morph/common 0.29.0)
+      #     and 9 (testcontainers -> archiver -> glob 10), all development
+      #     and test tools whose patterns come from code or config, never
+      #     from users. typescript-eslint 8.73.0 and @ts-morph/common 0.29.1
+      #     use ^11.0.1 (published 2026-11-16; the apps take them after the
+      #     5-day Yarn age gate); test-exclude 8.0.0, the latest, still uses
+      #     ^10.2.2. Reviewed by the maintainer 2026-11-17; remove when jest
+      #     and testcontainers ship a patched minimatch (plan
+      #     sysvena/mercato-platform#2 step 5).
+      ALLOW_GHSAS: GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249
       LICENSE_EXCEPTIONS: |
         [
           {"purl": "pkg:npm/%40sysvena/agent-rules", "license": "NOASSERTION",

@@ -483,7 +483,7 @@ policy_case "exceptions only from this workflow" "$review | .with.\"allow-depend
   '${{ steps.exceptions.outputs.purls }}'
 # shellcheck disable=SC2016 # literal workflow expressions, not shell
 policy_case "allowed advisories only from this workflow" "$review | .with.\"allow-ghsas\"" '${{ env.ALLOW_GHSAS }}'
-policy_case "allowed advisories as reviewed" "$dr.env.ALLOW_GHSAS" "GHSA-3g3m-2fjr-6pw4"
+policy_case "allowed advisories as reviewed" "$dr.env.ALLOW_GHSAS" "GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249"
 policy_case "only the policy inputs are set" "$review | .with | keys | join(\",\")" \
   "fail-on-severity,fail-on-scopes,allow-licenses,allow-dependencies-licenses,allow-ghsas"
 policy_case "allow list as decided" "$dr.env.ALLOW_LICENSES" \
