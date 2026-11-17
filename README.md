@@ -107,8 +107,9 @@ graph, on every repository. The policy and its sources are in the comment above
 the job in `sysvena-gates.yml`; in short:
 
 - **Vulnerabilities:** every severity, scopes runtime, development and unknown.
-  No exceptions; if a vulnerability cannot be fixed, its GHSA id goes into
-  `allow-ghsas` with a comment, through a PR here.
+  If a vulnerability cannot be fixed, its GHSA id goes into `ALLOW_GHSAS`
+  with the review behind it, through a PR here (now: GHSA-3g3m-2fjr-6pw4,
+  glob, until the Mercato 0.10.0 upgrade).
 - **Licences:** an allow list (`ALLOW_LICENSES`) of licences that both Google's
   classification and the Blue Oak Council list rate permissive, plus
   CC-BY-4.0 for data. A dependency whose licence the dependency graph cannot
@@ -192,7 +193,7 @@ excludes it.
    a description without the self-check, then edited, with a re-run;
    title type `style`;
    shipped file without a changeset; README change without and with an empty
-   changeset; a PR that loosens the changeset config; a vulnerable development dependency, a
+   changeset; a PR that loosens the changeset config; a vulnerable development dependency, one with a reviewed advisory, a
    dependency under MPL-2.0, an action with no licence, a clean dependency and
    an own package, an LGPL package (prebuilt libvips of sharp) a compound BSD licence (uri-js), and MPL and Windows sharp packages with an exception for dependency review), checks each gate's result, the gates
    version the run reports, the canary's `.nvmrc` Node version and the lessons

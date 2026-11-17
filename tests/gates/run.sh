@@ -481,8 +481,11 @@ policy_case "uses the allow list" "$review | .with.\"allow-licenses\"" '${{ env.
 # shellcheck disable=SC2016 # literal workflow expressions, not shell
 policy_case "exceptions only from this workflow" "$review | .with.\"allow-dependencies-licenses\"" \
   '${{ steps.exceptions.outputs.purls }}'
+# shellcheck disable=SC2016 # literal workflow expressions, not shell
+policy_case "allowed advisories only from this workflow" "$review | .with.\"allow-ghsas\"" '${{ env.ALLOW_GHSAS }}'
+policy_case "allowed advisories as reviewed" "$dr.env.ALLOW_GHSAS" "GHSA-3g3m-2fjr-6pw4"
 policy_case "only the policy inputs are set" "$review | .with | keys | join(\",\")" \
-  "fail-on-severity,fail-on-scopes,allow-licenses,allow-dependencies-licenses"
+  "fail-on-severity,fail-on-scopes,allow-licenses,allow-dependencies-licenses,allow-ghsas"
 policy_case "allow list as decided" "$dr.env.ALLOW_LICENSES" \
   "MIT, MIT-0, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD, BlueOak-1.0.0, Zlib, Python-2.0, AFL-2.1, AFL-3.0, CC0-1.0, Unlicense, CC-BY-4.0"
 policy_case "read-only token" "$dr.permissions | to_entries | map(.key + \"=\" + .value) | join(\",\")" "contents=read"
