@@ -171,13 +171,15 @@ check() {
 # Checks job results and what every run must show: the candidate version, the
 # canary's Node version and the lessons check. Dependency review, Changeset and
 # Workflow lockfile must succeed unless DR_WANT/DR_MESSAGE, CS_WANT/CS_MESSAGE or
-# LF_WANT/LF_MESSAGE say otherwise (set them for one call only).
+# LF_WANT/LF_MESSAGE say otherwise; Repo checks likewise with REPO_WANT/REPO_MESSAGE
+# (set them for one call only).
 expect() {
   local label=$1 run=$2 attempt=$3 want_title=$4 want_changes=$5 message=${6:-}
   local want_dr=${DR_WANT:-success} dr_message=${DR_MESSAGE:-}
   local want_cs=${CS_WANT:-success} cs_message=${CS_MESSAGE:-}
   local want_lf=${LF_WANT:-success} lf_message=${LF_MESSAGE:-}
   local want_desc=${DESC_WANT:-success} desc_message=${DESC_MESSAGE:-}
+  local want_repo=${REPO_WANT:-success} repo_message=${REPO_MESSAGE:-}
   local title changes repo dr cs lf detect_log changes_log repo_log dr_log cs_log lf_log
   title=$(job_result "$run" "$attempt" "PR title")
   changes=$(job_result "$run" "$attempt" "Regression test")
@@ -215,7 +217,10 @@ expect() {
     check "$label: regression test says \"$message\"" grep -qF -- "$message" <<< "$changes_log"
   fi
   check "$label: ran $candidate" grep -qF "sysvena gates version: $candidate" <<< "$detect_log"
-  check "$label: repo checks success (got $repo)" [ "$repo" = success ]
+  check "$label: repo checks $want_repo (got $repo)" [ "$repo" = "$want_repo" ]
+  if [ -n "$repo_message" ]; then
+    check "$label: repo checks say \"$repo_message\"" grep -qF -- "$repo_message" <<< "$repo_log"
+  fi
   check "$label: Node v$node_wanted from .nvmrc" grep -qx "Node v$node_wanted" <<< "$repo_log"
   # The step itself, not its output: the canary's stand-in and the lessons
   # check of the Open Mercato template print different lines.
@@ -437,6 +442,16 @@ gh_write false -- -X PATCH "repos/$canary/pulls/$pr15" -f "body=$(default_body)"
 wait_pr_state "$pr15" '.body | test("Quality:")'
 attempt=$(rerun "$run15"); wait_run "$sha15" "$attempt" > /dev/null
 DESC_MESSAGE="PR description has the self-check" expect "15b body edited, re-run" "$run15" "$attempt" success success
+
+log "16. PR that edits the synced agent rules (.ai/project-rules.md)"
+# Scenario 1 shows that an ordinary change passes Repo checks.
+rules=$(gh_read "repos/$canary/contents/.ai/project-rules.md?ref=$main_sha" --jq .content | base64 -d)
+open_pr 16 "docs: e2e local edit of the agent rules" \
+  ".ai/project-rules.md=$rules
+Local edit by the end-to-end test." "$(changeset 16)"
+run=$(wait_run "$PR_SHA" 1)
+REPO_WANT=failure REPO_MESSAGE=".ai/project-rules.md: differs from @sysvena/agent-rules" \
+  expect "16" "$run" 1 success success
 
 log ""
 if [ "$failures" -eq 0 ]; then
