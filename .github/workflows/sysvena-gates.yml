@@ -358,8 +358,11 @@ jobs:
   #       reason  who reviewed it, when, and why it is acceptable
   #     An exception covers every version of the package, but the check fails
   #     when an added version reports a licence other than the approved one.
-  #   - Vulnerabilities have no exceptions. If one ever cannot be fixed, add
-  #     its GHSA id to ALLOW_GHSAS below with a comment, through a PR.
+  #     A licence the dependency graph misdetects (ClearlyDefined data with a
+  #     licence the package does not carry) is excepted the same way, with
+  #     the licence text the package actually ships in the reason.
+  #   - A vulnerability that cannot be fixed yet goes into ALLOW_GHSAS below,
+  #     with the review behind it, through a PR.
   dependency-review:
     name: Dependency review
     runs-on: ubuntu-latest
@@ -444,6 +447,10 @@ jobs:
            "reason": "Prebuilt sharp for Windows or WebAssembly with libvips built in; installed only on those platforms, never in a Linux image. Same decision as @img/sharp-libvips-* (lawyer doc section 7). Reviewed by the maintainer 2026-11-16."},
           {"purl": "pkg:npm/uri-js", "license": "BSD-2-Clause AND BSD-2-Clause-Views",
            "reason": "Dependency of ESLint through ajv 6 (every Mercato app lints with ESLint). BSD-2-Clause-Views is BSD-2-Clause plus one sentence that the views are the authors' own, no further obligation; Blue Oak Silver, not classified by Google licenseclassifier, so an exception and not the allow list. Reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:npm/json-schema-typed", "license": "BSD-2-Clause AND JSON",
+           "reason": "Misdetected licence: the package ships only the BSD-2-Clause text (LICENSE.md; the JSON Schema drafts' copyright lines name \"JSON Schema\"), npm declares BSD-2-Clause, no JSON licence text in the package; the graph takes \"BSD-2-Clause AND JSON\" from ClearlyDefined. Dependency of @modelcontextprotocol/sdk (Mercato AI). Curation proposed to ClearlyDefined. Reviewed by the maintainer 2026-11-17."},
+          {"purl": "pkg:npm/leac", "license": "JSON AND MIT",
+           "reason": "Misdetected licence: the package ships only the MIT text (LICENSE), npm and the repository declare MIT, no JSON licence text in the package (the repository has a JSON lexer example); the graph takes \"JSON AND MIT\" from ClearlyDefined. Dependency of html-to-text through selderee and parseley. Curation proposed to ClearlyDefined. Reviewed by the maintainer 2026-11-17."},
           {"purl": "pkg:npm/%40img/sharp-libvips-darwin-arm64", "license": "LGPL-3.0-or-later",
            "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
           {"purl": "pkg:npm/%40img/sharp-libvips-darwin-x64", "license": "LGPL-3.0-or-later",
