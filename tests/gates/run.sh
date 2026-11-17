@@ -207,9 +207,10 @@ dr_check_case() {
   mkdir -p "$fix" "$work"
   printf '%s\n' "$compare" > "$fix/compare.json"
   : > "$fix/calls"
-  local got=pass
+  local got=pass allow
+  allow=$(yq "$dr.env.ALLOW_LICENSES" "$workflow")
   (cd "$work" && FIX="$fix" PATH="$stub:$PATH" REPO=o/r BASE_SHA=b1 HEAD_SHA=h1 \
-    REVIEW_OUTCOME="$outcome" INVALID_LICENSES="$invalid" LICENSE_EXCEPTIONS="$exceptions" \
+    ALLOW_LICENSES="$allow" REVIEW_OUTCOME="$outcome" INVALID_LICENSES="$invalid" LICENSE_EXCEPTIONS="$exceptions" \
     bash -e "$tmp/dr-check.sh" > "$work/log" 2>&1) || got=fail
   local ok=true detail=""
   if [ "$got" != "$want" ]; then
@@ -549,10 +550,24 @@ dr_check_case "an exception does not cover a package with a longer name" pass su
   "[$(add pkg:npm/elkjs-extra@1.0.0 '"MIT"')]"
 dr_check_case "purl match ignores case and qualifiers" fail success "$none" \
   '[{"purl":"pkg:npm/%40img/sharp-libvips-linux-x64","license":"LGPL-3.0-or-later","reason":"r"}]' \
-  "[$(add 'pkg:npm/%40IMG/sharp-libvips-linux-x64@1.3.4?arch=x64' '"MIT"')]" "the exception approved LGPL-3.0-or-later"
+  "[$(add 'pkg:npm/%40IMG/sharp-libvips-linux-x64@1.3.4?arch=x64' '"GPL-3.0-only"')]" "the exception approved LGPL-3.0-or-later"
 dr_check_case "scoped package purl without the version matches" fail success "$none" \
   '[{"purl":"pkg:npm/%40img/sharp-libvips-linux-x64","license":"LGPL-3.0-or-later","reason":"r"}]' \
-  "[$(add 'pkg:npm/%40img/sharp-libvips-linux-x64@1.3.4' '"MIT"')]" "reports MIT"
+  "[$(add 'pkg:npm/%40img/sharp-libvips-linux-x64@1.3.4' '"GPL-3.0-only"')]" "reports GPL-3.0-only"
+ex_leac='[{"purl":"pkg:npm/leac","license":"JSON AND MIT","reason":"r"}]'
+dr_check_case "excepted package, another version with an allowed licence passes with a notice" pass success "$none" \
+  "$ex_leac" "[$(add pkg:npm/leac@0.6.0 '"MIT"'), $(add pkg:npm/leac@0.7.0 '"JSON AND MIT"')]" \
+  "package.json » leac@0.6.0: reports MIT, the exception approved JSON AND MIT" yes
+dr_check_case "excepted package with an allowed compound licence passes" pass success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.10.0 '"(MIT OR Apache-2.0) AND BSD-3-Clause"')]" "this version needs no exception"
+dr_check_case "excepted package with one licence off the allow list fails" fail success "$none" "$ex_leac" \
+  "[$(add pkg:npm/leac@0.8.0 '"MIT AND WTFPL"')]" "reports MIT AND WTFPL"
+dr_check_case "excepted package with a WITH exception fails" fail success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.10.0 '"Apache-2.0 WITH LLVM-exception"')]" "reports Apache-2.0 WITH LLVM-exception"
+dr_check_case "excepted package with a LicenseRef fails" fail success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.10.0 '"LicenseRef-scancode-free-unknown"')]" "reports LicenseRef-scancode-free-unknown"
+dr_check_case "an allowed name inside a longer identifier is not allowed" fail success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.10.0 '"MIT-Modern-Variant"')]" "reports MIT-Modern-Variant"
 dr_check_case "unknown licence and changed exception are both reported" fail success \
   '{"forbidden":[],"unresolved":[],"unlicensed":[{"manifest":"package.json","name":"mystery","version":"1.0.0","package_url":"pkg:npm/mystery@1.0.0"}]}' \
   "$ex_elk" "[$(add pkg:npm/elkjs@0.10.0 '"GPL-3.0-only"')]" "reports GPL-3.0-only"

@@ -357,7 +357,10 @@ jobs:
   #               expression, or NOASSERTION when it reports none
   #       reason  who reviewed it, when, and why it is acceptable
   #     An exception covers every version of the package, but the check fails
-  #     when an added version reports a licence other than the approved one.
+  #     when an added version reports a licence other than the approved one,
+  #     unless every licence in what it reports is on ALLOW_LICENSES (then the
+  #     version needs no exception; the check prints a notice, so an exception
+  #     that no version needs any more is seen and removed).
   #     A licence the dependency graph misdetects (ClearlyDefined data with a
   #     licence the package does not carry) is excepted the same way, with
   #     the licence text the package actually ships in the reason.
@@ -534,18 +537,30 @@ jobs:
             fi
           fi
 
-          # Excepted packages must still have the licence that was approved.
+          # Excepted packages must still have the licence that was approved,
+          # or one the allow list covers on its own (every licence identifier
+          # in the expression is on ALLOW_LICENSES; WITH, NOASSERTION and
+          # LicenseRef-* never are).
           if [ "$(jq length <<< "$LICENSE_EXCEPTIONS")" -gt 0 ]; then
             gh api --paginate "repos/$REPO/dependency-graph/compare/$BASE_SHA...$HEAD_SHA" --jq '.[]' \
               | jq -s . > dependency-changes.json
-            changed=$(jq -r --argjson ex "$LICENSE_EXCEPTIONS" '
+            checked=$(jq -c --argjson ex "$LICENSE_EXCEPTIONS" --arg allow "$ALLOW_LICENSES" '
               def base: ascii_downcase | sub("[?#].*$"; "") | sub("@[^/@]*$"; "");
-              .[] | select(.change_type == "added") | . as $c
+              ($allow | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $ok
+              | .[] | select(.change_type == "added") | . as $c
               | ($ex[] | select((.purl | base) == ($c.package_url | base))) as $e
               | ($c.license // "NOASSERTION") as $got
               | select($got != $e.license)
-              | "  \($c.manifest) » \($c.name)@\($c.version): reports \($got), the exception approved \($e.license) (\($e.purl))"
+              | ($got | gsub("[()]"; " ") | split(" ") | map(select(length > 0 and . != "AND" and . != "OR"))) as $ids
+              | {allowed: (($ids | length) > 0 and all($ids[]; . as $id | $ok | index([$id]) != null)),
+                 line: "  \($c.manifest) » \($c.name)@\($c.version): reports \($got), the exception approved \($e.license) (\($e.purl))"}
               ' dependency-changes.json)
+            allowed=$(jq -r 'select(.allowed) | .line' <<< "$checked")
+            changed=$(jq -r 'select(.allowed | not) | .line' <<< "$checked")
+            if [ -n "$allowed" ]; then
+              echo "::notice::Excepted dependencies report a licence the allow list covers; this version needs no exception. If no version needs it any more, remove the exception in sysvena/.github."
+              printf '%s\n' "$allowed"
+            fi
             if [ -n "$changed" ]; then
               echo "::error::Excepted dependencies now report a different licence. Review the new licence and update the exception in sysvena/.github."
               printf '%s\n' "$changed"
