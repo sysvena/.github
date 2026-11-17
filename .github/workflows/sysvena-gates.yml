@@ -359,7 +359,7 @@ jobs:
   #     An exception covers every version of the package, but the check fails
   #     when an added version reports a licence other than the approved one.
   #   - Vulnerabilities have no exceptions. If one ever cannot be fixed, add
-  #     its GHSA id to `allow-ghsas` below with a comment, through a PR.
+  #     its GHSA id to ALLOW_GHSAS below with a comment, through a PR.
   dependency-review:
     name: Dependency review
     runs-on: ubuntu-latest
@@ -376,6 +376,16 @@ jobs:
       # one gets an entry when it is first published; a scope-wide rule would
       # also pass a public package of the same name, as a purl does not say
       # which registry it came from.
+      # Advisories that cannot be fixed yet, each with the review behind it.
+      #   GHSA-3g3m-2fjr-6pw4 (glob >= 9.0.0, <= 14.0.1, moderate): an aborted
+      #     async walk keeps reading directories. Fixed only in glob 14.0.2;
+      #     every Mercato 0.9.0 app gets glob 10 (archiver-utils, ^10) and 13
+      #     (jest, test-exclude, ^13), as upstream main does. No caller uses
+      #     an AbortSignal: archiver-utils calls glob.sync only, Mercato
+      #     imports glob in build scripts only, jest is a dev tool. Reviewed
+      #     by the maintainer 2026-11-17; re-check at the Mercato 0.10.0
+      #     upgrade (plan sysvena/mercato-platform#2 step 5).
+      ALLOW_GHSAS: GHSA-3g3m-2fjr-6pw4
       LICENSE_EXCEPTIONS: |
         [
           {"purl": "pkg:npm/%40sysvena/agent-rules", "license": "NOASSERTION",
@@ -467,6 +477,7 @@ jobs:
           fail-on-scopes: runtime, development, unknown
           allow-licenses: ${{ env.ALLOW_LICENSES }}
           allow-dependencies-licenses: ${{ steps.exceptions.outputs.purls }}
+          allow-ghsas: ${{ env.ALLOW_GHSAS }}
 
       - name: Check unknown and excepted licences
         if: ${{ !cancelled() && steps.exceptions.outcome == 'success' }}

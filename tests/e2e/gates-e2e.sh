@@ -262,6 +262,11 @@ open_pr 5 "feat: e2e vulnerable dev dependency" "$(package_json 5 '{}' '{"lodash
 run=$(wait_run "$PR_SHA" 1)
 DR_WANT=failure DR_MESSAGE=GHSA-35jh-r3h4-6jhm expect "5" "$run" 1 success success
 
+log "5b. Dependency with a reviewed advisory (glob 10.5.0, GHSA-3g3m-2fjr-6pw4 in ALLOW_GHSAS)"
+open_pr 5b "feat: e2e reviewed advisory" "$(package_json 5b '{"glob": "10.5.0"}' '{}')" "$(changeset 5b)"
+run=$(wait_run "$PR_SHA" 1)
+DR_MESSAGE="Every added dependency has a detected licence or a reviewed exception." expect "5b" "$run" 1 success success
+
 log "6. Dependency with a licence outside the allow list (webextension-polyfill, MPL-2.0, no exception)"
 open_pr 6 "feat: e2e dependency with a reviewed-only licence" "$(package_json 6 '{"webextension-polyfill": "0.12.0"}' '{}')" "$(changeset 6)"
 run=$(wait_run "$PR_SHA" 1)
