@@ -14,8 +14,8 @@
 # switching branches in the same checkout) cannot change a running test.
 {
 set -euo pipefail
-# shellcheck source=scripts/lib/gh-read.sh
-. "$(dirname "$0")/../../scripts/lib/gh-read.sh"
+# shellcheck source=scripts/lib/gh-retry.sh
+. "$(dirname "$0")/../../scripts/lib/gh-retry.sh"
 
 org=sysvena
 source_repo=$org/.github
@@ -35,14 +35,42 @@ log() { printf '%s\n' "$*"; }
 pass() { log "  ok     - $*"; }
 fail() { log "  not ok - $*"; failures=$((failures + 1)); }
 
+# --- Read-backs for gh_write: did a write that failed still happen? -----------
+# Each prints what the write would have printed, if anything. gh_write calls
+# them, so shellcheck sees no caller (SC2329).
+# shellcheck disable=SC2329
+ref_at() { [ "$(gh_read "repos/$canary/git/ref/heads/$1" --jq .object.sha 2> /dev/null)" = "$2" ]; }
+# shellcheck disable=SC2329
+ref_gone() { # only a 404 means gone; any other failure is not an answer
+  local err
+  err=$(gh api "repos/$canary/git/ref/heads/$1" 2>&1 > /dev/null) && return 1
+  grep -qE 'HTTP 404\b' <<< "$err"
+}
+# shellcheck disable=SC2329
+file_is() { [ "$(gh_read "repos/$canary/contents/$2?ref=$1" --jq .content | base64 -d)" = "$3" ]; }
+# shellcheck disable=SC2329
+pr_of() { # prints the number of the open PR from that branch
+  local n
+  n=$(gh_read "repos/$canary/pulls?head=$org:$1&state=open" --jq '.[0].number // empty') && [ -n "$n" ] && echo "$n"
+}
+# shellcheck disable=SC2329
+commented() { gh_read "repos/$canary/issues/$1/comments" --paginate --jq '.[].body' | grep -qxF -- "$2"; }
+# shellcheck disable=SC2329
+label_exists() { gh_read "repos/$canary/labels/$1" > /dev/null; }
+# shellcheck disable=SC2329
+attempt_after() { [ "$(gh_read "repos/$canary/actions/runs/$1" --jq .run_attempt)" -gt "$2" ]; }
+
 # shellcheck disable=SC2329 # called by the EXIT trap
 cleanup() {
-  local pr branch
+  local pr branch note="End-to-end test of $source_repo@$candidate finished."
   for pr in "${prs[@]}"; do
-    gh pr close "$pr" -R "$canary" -c "End-to-end test of $source_repo@$candidate finished." > /dev/null 2>&1 || true
+    gh_write commented "$pr" "$note" -- -X POST "repos/$canary/issues/$pr/comments" -f "body=$note" > /dev/null \
+      && gh_write false -- -X PATCH "repos/$canary/pulls/$pr" -f state=closed > /dev/null \
+      || echo "Cleanup: could not close PR $canary#$pr; close it by hand." >&2
   done
   for branch in "${branches[@]}"; do
-    gh api -X DELETE "repos/$canary/git/refs/heads/$branch" > /dev/null 2>&1 || true
+    gh_write ref_gone "$branch" -- -X DELETE "repos/$canary/git/refs/heads/$branch" > /dev/null \
+      || echo "Cleanup: could not delete branch $branch of $canary; delete it by hand." >&2
   done
 }
 trap cleanup EXIT
@@ -54,7 +82,7 @@ gh_read "orgs/$org/rulesets/$ruleset_id" \
   | jq --arg sha "$candidate" '{name, target, enforcement, conditions, bypass_actors,
       rules: [.rules[] | if .type == "workflows"
         then .parameters.workflows |= map(del(.ref) | .sha = $sha) else . end]}' \
-  | gh api -X PUT "orgs/$org/rulesets/$ruleset_id" --input - > /dev/null
+  | gh_write false -- -X PUT "orgs/$org/rulesets/$ruleset_id" --input - > /dev/null
 pinned=$(gh_read "orgs/$org/rulesets/$ruleset_id" --jq '.rules[] | select(.type == "workflows") | .parameters.workflows[0].sha')
 [ "$pinned" = "$candidate" ] || { echo "Ruleset $canary_ruleset is at $pinned, not $candidate" >&2; exit 1; }
 log "Testing $source_repo@$candidate on $canary (ruleset $canary_ruleset)."
@@ -62,7 +90,7 @@ log "Testing $source_repo@$candidate on $canary (ruleset $canary_ruleset)."
 main_sha=$(gh_read "repos/$canary/git/ref/heads/main" --jq .object.sha)
 node_wanted=$(gh_read "repos/$canary/contents/.nvmrc?ref=$main_sha" --jq .content | base64 -d | tr -d '[:space:]')
 gh_read "repos/$canary/labels/bug" > /dev/null 2>&1 \
-  || gh api -X POST "repos/$canary/labels" -f name=bug -f color=d73a4a > /dev/null
+  || gh_write label_exists bug -- -X POST "repos/$canary/labels" -f name=bug -f color=d73a4a > /dev/null
 
 # --- Helpers ------------------------------------------------------------------
 # default_body: a PR description that passes the PR description gate.
@@ -78,18 +106,19 @@ open_pr() {
   local n=$1 title=$2 branch="e2e/$stamp/$1" spec path old
   local -a sha_arg
   shift 2
-  gh api -X POST "repos/$canary/git/refs" -f "ref=refs/heads/$branch" -f "sha=$main_sha" > /dev/null
   branches+=("$branch")
+  gh_write ref_at "$branch" "$main_sha" -- -X POST "repos/$canary/git/refs" -f "ref=refs/heads/$branch" -f "sha=$main_sha" > /dev/null
   for spec in "$@"; do
     path=${spec%%=*}
     # Replacing an existing file needs its blob sha.
     sha_arg=()
     old=$(gh_read "repos/$canary/contents/$path?ref=$branch" --jq .sha 2> /dev/null) && sha_arg=(-f "sha=$old")
-    gh api -X PUT "repos/$canary/contents/$path" -f "message=test: e2e $stamp $n" -f "branch=$branch" \
+    gh_write file_is "$branch" "$path" "${spec#*=}" -- \
+      -X PUT "repos/$canary/contents/$path" -f "message=test: e2e $stamp $n" -f "branch=$branch" \
       -f "content=$(printf '%s\n' "${spec#*=}" | base64 | tr -d '\n')" "${sha_arg[@]}" > /dev/null
   done
   PR_SHA=$(gh_read "repos/$canary/git/ref/heads/$branch" --jq .object.sha)
-  PR_NUMBER=$(gh api -X POST "repos/$canary/pulls" -f "title=$title" -f "head=$branch" -f base=main \
+  PR_NUMBER=$(gh_write pr_of "$branch" -- -X POST "repos/$canary/pulls" -f "title=$title" -f "head=$branch" -f base=main \
     -f "body=${PR_BODY-$(default_body)}" --jq .number)
   prs+=("$PR_NUMBER")
 }
@@ -115,7 +144,7 @@ wait_run() {
 rerun() {
   local attempt
   attempt=$(gh_read "repos/$canary/actions/runs/$1" --jq .run_attempt)
-  gh api -X POST "repos/$canary/actions/runs/$1/rerun" > /dev/null
+  gh_write attempt_after "$1" "$attempt" -- -X POST "repos/$canary/actions/runs/$1/rerun" > /dev/null
   printf '%s\n' $((attempt + 1))
 }
 
@@ -213,11 +242,11 @@ open_pr 2 "fix: e2e fix without a test" "src/e2e-$stamp-2.ts=export const x = 2"
 pr2=$PR_NUMBER sha2=$PR_SHA
 run2=$(wait_run "$sha2" 1)
 expect "2a fix title" "$run2" 1 success failure "A bug fix (title type 'fix')"
-gh api -X PATCH "repos/$canary/pulls/$pr2" -f "title=feat: e2e fix without a test" > /dev/null
+gh_write false -- -X PATCH "repos/$canary/pulls/$pr2" -f "title=feat: e2e fix without a test" > /dev/null
 wait_pr_state "$pr2" '.title == "feat: e2e fix without a test"'
 attempt=$(rerun "$run2"); wait_run "$sha2" "$attempt" > /dev/null
 expect "2b title edited, re-run" "$run2" "$attempt" success success
-gh api -X POST "repos/$canary/issues/$pr2/labels" -f "labels[]=bug" > /dev/null
+gh_write false -- -X POST "repos/$canary/issues/$pr2/labels" -f "labels[]=bug" > /dev/null
 wait_pr_state "$pr2" 'any(.labels[]; .name == "bug")'
 attempt=$(rerun "$run2"); wait_run "$sha2" "$attempt" > /dev/null
 expect "2c label bug, re-run" "$run2" "$attempt" success failure "A bug fix (label 'bug')"
@@ -397,7 +426,7 @@ PR_BODY="End-to-end test without the self-check. Closed automatically." \
 pr15=$PR_NUMBER sha15=$PR_SHA
 run15=$(wait_run "$sha15" 1)
 CS_MESSAGE="Changeset check OK." DESC_WANT=failure DESC_MESSAGE="must end with the self-check" expect "15a" "$run15" 1 success success
-gh api -X PATCH "repos/$canary/pulls/$pr15" -f "body=$(default_body)" > /dev/null
+gh_write false -- -X PATCH "repos/$canary/pulls/$pr15" -f "body=$(default_body)" > /dev/null
 wait_pr_state "$pr15" '.body | test("Quality:")'
 attempt=$(rerun "$run15"); wait_run "$sha15" "$attempt" > /dev/null
 DESC_MESSAGE="PR description has the self-check" expect "15b body edited, re-run" "$run15" "$attempt" success success

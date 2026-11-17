@@ -59,7 +59,7 @@ jobs:
         run: tests/scripts/edit-safe.sh
 
       - name: Test the retry of GitHub reads in the scripts
-        run: tests/scripts/gh-read.sh
+        run: tests/scripts/gh-retry.sh
 
       - name: Run the gate tests
         run: tests/gates/run.sh

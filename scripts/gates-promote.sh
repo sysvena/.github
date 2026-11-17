@@ -18,8 +18,8 @@
 # switching branches in the same checkout) cannot change a running test.
 {
 set -euo pipefail
-# shellcheck source=scripts/lib/gh-read.sh
-. "$(dirname "$0")/lib/gh-read.sh"
+# shellcheck source=scripts/lib/gh-retry.sh
+. "$(dirname "$0")/lib/gh-retry.sh"
 
 org=sysvena
 source_repo=$org/.github
@@ -58,7 +58,7 @@ gh_read "orgs/$org/rulesets/$ruleset_id" \
   | jq --arg sha "$commit" '{name, target, enforcement, conditions, bypass_actors,
       rules: [.rules[] | if .type == "workflows"
         then .parameters.workflows |= map(del(.ref) | .sha = $sha) else . end]}' \
-  | gh api -X PUT "orgs/$org/rulesets/$ruleset_id" --input - > /dev/null
+  | gh_write false -- -X PUT "orgs/$org/rulesets/$ruleset_id" --input - > /dev/null
 now=$(gh_read "orgs/$org/rulesets/$ruleset_id" --jq '.rules[] | select(.type == "workflows") | .parameters.workflows[0].sha')
 [ "$now" = "$commit" ] || { echo "$production_ruleset is at $now, not $commit" >&2; exit 1; }
 

@@ -217,13 +217,15 @@ running test (`tests/scripts/edit-safe.sh`, run in CI, checks this).
 Both scripts need `gh` logged in as an org owner (scopes `repo`, `admin:org`
 and `workflow`, for the test PR that adds a workflow file) and `jq`.
 
-Both scripts read the GitHub API through `gh_read` (`scripts/lib/gh-read.sh`,
-tested by `tests/scripts/gh-read.sh` in CI): a read that fails with HTTP 500,
-502, 503 or 504 is retried up to 3 times after 1, 4 and 9 seconds, as GitHub's
-own client `@octokit/plugin-retry` does. Writes are never retried, because a
-write that failed with 5xx may still have been applied. GitHub sometimes
-answers 503 for a job log right after the job ends, which stopped promotions
-before.
+Both scripts call the GitHub API through `scripts/lib/gh-retry.sh` (tested by
+`tests/scripts/gh-retry.sh` in CI), which survives GitHub's transient server
+errors (HTTP 500, 502, 503, 504) with up to 3 retries after 1, 4 and 9
+seconds, as GitHub's own client `@octokit/plugin-retry` does. `gh_read`
+retries reads. `gh_write` first reads back whether a failed write was applied
+anyway (the branch exists, the PR is open, the re-run started) and sends it
+again only when it was not; idempotent writes (a whole ruleset, a title)
+are simply retried. GitHub sometimes answers 503 for a job log right after
+the job ends, which stopped promotions before.
 
 ## Dependency updates
 
