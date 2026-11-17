@@ -14,6 +14,8 @@
 # switching branches in the same checkout) cannot change a running test.
 {
 set -euo pipefail
+# shellcheck source=scripts/lib/gh-read.sh
+. "$(dirname "$0")/../../scripts/lib/gh-read.sh"
 
 org=sysvena
 source_repo=$org/.github
@@ -23,7 +25,7 @@ gates=.github/workflows/sysvena-gates.yml
 timeout_s=600
 
 [ $# -eq 1 ] || { echo "Usage: $0 <commit of $source_repo>" >&2; exit 2; }
-candidate=$(gh api "repos/$source_repo/commits/$1" --jq .sha)
+candidate=$(gh_read "repos/$source_repo/commits/$1" --jq .sha)
 stamp=$(date -u +%Y%m%d%H%M%S)
 failures=0
 prs=()
@@ -46,20 +48,20 @@ cleanup() {
 trap cleanup EXIT
 
 # --- Point the canary ruleset at the candidate --------------------------------
-ruleset_id=$(gh api "orgs/$org/rulesets" --jq ".[] | select(.name == \"$canary_ruleset\") | .id")
+ruleset_id=$(gh_read "orgs/$org/rulesets" --jq ".[] | select(.name == \"$canary_ruleset\") | .id")
 [ -n "$ruleset_id" ] || { echo "Ruleset $canary_ruleset not found" >&2; exit 2; }
-gh api "orgs/$org/rulesets/$ruleset_id" \
+gh_read "orgs/$org/rulesets/$ruleset_id" \
   | jq --arg sha "$candidate" '{name, target, enforcement, conditions, bypass_actors,
       rules: [.rules[] | if .type == "workflows"
         then .parameters.workflows |= map(del(.ref) | .sha = $sha) else . end]}' \
   | gh api -X PUT "orgs/$org/rulesets/$ruleset_id" --input - > /dev/null
-pinned=$(gh api "orgs/$org/rulesets/$ruleset_id" --jq '.rules[] | select(.type == "workflows") | .parameters.workflows[0].sha')
+pinned=$(gh_read "orgs/$org/rulesets/$ruleset_id" --jq '.rules[] | select(.type == "workflows") | .parameters.workflows[0].sha')
 [ "$pinned" = "$candidate" ] || { echo "Ruleset $canary_ruleset is at $pinned, not $candidate" >&2; exit 1; }
 log "Testing $source_repo@$candidate on $canary (ruleset $canary_ruleset)."
 
-main_sha=$(gh api "repos/$canary/git/ref/heads/main" --jq .object.sha)
-node_wanted=$(gh api "repos/$canary/contents/.nvmrc?ref=$main_sha" --jq .content | base64 -d | tr -d '[:space:]')
-gh api "repos/$canary/labels/bug" > /dev/null 2>&1 \
+main_sha=$(gh_read "repos/$canary/git/ref/heads/main" --jq .object.sha)
+node_wanted=$(gh_read "repos/$canary/contents/.nvmrc?ref=$main_sha" --jq .content | base64 -d | tr -d '[:space:]')
+gh_read "repos/$canary/labels/bug" > /dev/null 2>&1 \
   || gh api -X POST "repos/$canary/labels" -f name=bug -f color=d73a4a > /dev/null
 
 # --- Helpers ------------------------------------------------------------------
@@ -82,11 +84,11 @@ open_pr() {
     path=${spec%%=*}
     # Replacing an existing file needs its blob sha.
     sha_arg=()
-    old=$(gh api "repos/$canary/contents/$path?ref=$branch" --jq .sha 2> /dev/null) && sha_arg=(-f "sha=$old")
+    old=$(gh_read "repos/$canary/contents/$path?ref=$branch" --jq .sha 2> /dev/null) && sha_arg=(-f "sha=$old")
     gh api -X PUT "repos/$canary/contents/$path" -f "message=test: e2e $stamp $n" -f "branch=$branch" \
       -f "content=$(printf '%s\n' "${spec#*=}" | base64 | tr -d '\n')" "${sha_arg[@]}" > /dev/null
   done
-  PR_SHA=$(gh api "repos/$canary/git/ref/heads/$branch" --jq .object.sha)
+  PR_SHA=$(gh_read "repos/$canary/git/ref/heads/$branch" --jq .object.sha)
   PR_NUMBER=$(gh api -X POST "repos/$canary/pulls" -f "title=$title" -f "head=$branch" -f base=main \
     -f "body=${PR_BODY-$(default_body)}" --jq .number)
   prs+=("$PR_NUMBER")
@@ -97,10 +99,10 @@ open_pr() {
 wait_run() {
   local sha=$1 attempt=$2 deadline=$((SECONDS + timeout_s)) run state
   while [ $SECONDS -lt $deadline ]; do
-    run=$(gh api "repos/$canary/actions/runs?head_sha=$sha" \
+    run=$(gh_read "repos/$canary/actions/runs?head_sha=$sha" \
       --jq '[.workflow_runs[] | select(.path == "'"$gates"'")][0].id // empty')
     if [ -n "$run" ]; then
-      state=$(gh api "repos/$canary/actions/runs/$run" --jq '"\(.run_attempt) \(.status)"')
+      state=$(gh_read "repos/$canary/actions/runs/$run" --jq '"\(.run_attempt) \(.status)"')
       if [ "$state" = "$attempt completed" ]; then printf '%s\n' "$run"; return; fi
     fi
     sleep 10
@@ -112,7 +114,7 @@ wait_run() {
 # rerun <run id>: starts the next attempt; prints its number.
 rerun() {
   local attempt
-  attempt=$(gh api "repos/$canary/actions/runs/$1" --jq .run_attempt)
+  attempt=$(gh_read "repos/$canary/actions/runs/$1" --jq .run_attempt)
   gh api -X POST "repos/$canary/actions/runs/$1/rerun" > /dev/null
   printf '%s\n' $((attempt + 1))
 }
@@ -120,13 +122,13 @@ rerun() {
 # job_log <run id> <attempt> <job name>: prints the job's log without timestamps.
 job_log() {
   local id
-  id=$(gh api "repos/$canary/actions/runs/$1/attempts/$2/jobs" --jq ".jobs[] | select(.name == \"$3\") | .id")
-  gh api --allow-escape-sequences "repos/$canary/actions/jobs/$id/logs" \
+  id=$(gh_read "repos/$canary/actions/runs/$1/attempts/$2/jobs" --jq ".jobs[] | select(.name == \"$3\") | .id")
+  gh_read --allow-escape-sequences "repos/$canary/actions/jobs/$id/logs" \
     | sed -E 's/^[0-9T:.-]+Z //; s/\x1b\[[0-9;]*m//g'
 }
 
 job_result() { # <run id> <attempt> <job name>
-  gh api "repos/$canary/actions/runs/$1/attempts/$2/jobs" --jq ".jobs[] | select(.name == \"$3\") | .conclusion"
+  gh_read "repos/$canary/actions/runs/$1/attempts/$2/jobs" --jq ".jobs[] | select(.name == \"$3\") | .conclusion"
 }
 
 # check <description> <command...>: one test result, from the command's status.
@@ -192,7 +194,7 @@ expect() {
 # wait_pr_state <pr> <jq filter that must be true>: waits until the API shows it.
 wait_pr_state() {
   local deadline=$((SECONDS + 60))
-  until [ "$(gh api "repos/$canary/pulls/$1" --jq "$2")" = true ]; do
+  until [ "$(gh_read "repos/$canary/pulls/$1" --jq "$2")" = true ]; do
     [ $SECONDS -lt $deadline ] || { echo "PR $1 never matched $2" >&2; return 1; }
     sleep 2
   done
@@ -246,7 +248,7 @@ run=$(wait_run "$PR_SHA" 1)
 CS_MESSAGE="Changeset check OK." expect "4c" "$run" 1 success success
 
 log "4d. A PR that loosens the changeset config is checked with the base config"
-loose=$(gh api "repos/$canary/contents/.changeset/config.json?ref=$main_sha" --jq .content | base64 -d \
+loose=$(gh_read "repos/$canary/contents/.changeset/config.json?ref=$main_sha" --jq .content | base64 -d \
   | jq '.changedFilePatterns = ["nothing/**"]')
 open_pr 4d "feat: e2e loosened changeset config" ".changeset/config.json=$loose" "src/e2e-$stamp-4d.ts=export const x = 4"
 run=$(wait_run "$PR_SHA" 1)

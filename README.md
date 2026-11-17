@@ -217,6 +217,14 @@ running test (`tests/scripts/edit-safe.sh`, run in CI, checks this).
 Both scripts need `gh` logged in as an org owner (scopes `repo`, `admin:org`
 and `workflow`, for the test PR that adds a workflow file) and `jq`.
 
+Both scripts read the GitHub API through `gh_read` (`scripts/lib/gh-read.sh`,
+tested by `tests/scripts/gh-read.sh` in CI): a read that fails with HTTP 500,
+502, 503 or 504 is retried up to 3 times after 1, 4 and 9 seconds, as GitHub's
+own client `@octokit/plugin-retry` does. Writes are never retried, because a
+write that failed with 5xx may still have been applied. GitHub sometimes
+answers 503 for a job log right after the job ends, which stopped promotions
+before.
+
 ## Dependency updates
 
 `.github/dependabot.yml` turns on Dependabot version updates; security updates

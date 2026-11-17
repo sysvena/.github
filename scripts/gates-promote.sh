@@ -18,6 +18,8 @@
 # switching branches in the same checkout) cannot change a running test.
 {
 set -euo pipefail
+# shellcheck source=scripts/lib/gh-read.sh
+. "$(dirname "$0")/lib/gh-read.sh"
 
 org=sysvena
 source_repo=$org/.github
@@ -29,18 +31,18 @@ if [ "${1:-}" = --rollback ]; then
   shift
 fi
 [ $# -eq 1 ] || { echo "Usage: $0 [--rollback] <commit on main of $source_repo>" >&2; exit 2; }
-commit=$(gh api "repos/$source_repo/commits/$1" --jq .sha)
+commit=$(gh_read "repos/$source_repo/commits/$1" --jq .sha)
 
 # On main: main is identical to the commit or ahead of it.
-status=$(gh api "repos/$source_repo/compare/$commit...main" --jq .status)
+status=$(gh_read "repos/$source_repo/compare/$commit...main" --jq .status)
 case "$status" in
   identical | ahead) ;;
   *) echo "$commit is not on main of $source_repo (main is $status)" >&2; exit 1 ;;
 esac
 
-ruleset_id=$(gh api "orgs/$org/rulesets" --jq ".[] | select(.name == \"$production_ruleset\") | .id")
+ruleset_id=$(gh_read "orgs/$org/rulesets" --jq ".[] | select(.name == \"$production_ruleset\") | .id")
 [ -n "$ruleset_id" ] || { echo "Ruleset $production_ruleset not found" >&2; exit 2; }
-previous=$(gh api "orgs/$org/rulesets/$ruleset_id" --jq '.rules[] | select(.type == "workflows") | .parameters.workflows[0].sha // .parameters.workflows[0].ref')
+previous=$(gh_read "orgs/$org/rulesets/$ruleset_id" --jq '.rules[] | select(.type == "workflows") | .parameters.workflows[0].sha // .parameters.workflows[0].ref')
 if [ "$previous" = "$commit" ]; then
   echo "$production_ruleset is already at $commit."
   exit 0
@@ -52,12 +54,12 @@ else
   "$(dirname "$0")/../tests/e2e/gates-e2e.sh" "$commit"
 fi
 
-gh api "orgs/$org/rulesets/$ruleset_id" \
+gh_read "orgs/$org/rulesets/$ruleset_id" \
   | jq --arg sha "$commit" '{name, target, enforcement, conditions, bypass_actors,
       rules: [.rules[] | if .type == "workflows"
         then .parameters.workflows |= map(del(.ref) | .sha = $sha) else . end]}' \
   | gh api -X PUT "orgs/$org/rulesets/$ruleset_id" --input - > /dev/null
-now=$(gh api "orgs/$org/rulesets/$ruleset_id" --jq '.rules[] | select(.type == "workflows") | .parameters.workflows[0].sha')
+now=$(gh_read "orgs/$org/rulesets/$ruleset_id" --jq '.rules[] | select(.type == "workflows") | .parameters.workflows[0].sha')
 [ "$now" = "$commit" ] || { echo "$production_ruleset is at $now, not $commit" >&2; exit 1; }
 
 echo "$production_ruleset moved from $previous to $commit."
