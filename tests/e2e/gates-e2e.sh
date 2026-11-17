@@ -324,10 +324,13 @@ open_pr 9d "feat: e2e reviewed MPL and sharp dependencies" \
 run=$(wait_run "$PR_SHA" 1)
 DR_MESSAGE="Every excepted dependency still has its approved licence." expect "9d" "$run" 1 success success
 
-log "9e. Dependencies with a misdetected licence and a reviewed exception (json-schema-typed 8.0.2, leac 0.7.0)"
-open_pr 9e "feat: e2e misdetected licences" "$(package_json 9e '{"json-schema-typed": "8.0.2", "leac": "0.7.0"}' '{}')" "$(changeset 9e)"
+log "9e. Misdetected licences with reviewed exceptions (json-schema-typed 8.0.2, leac 0.7.0), and leac 0.6.0 with its allowed MIT"
+# An excepted package whose other version reports an allowed licence passes,
+# as in an app with both leac 0.6.0 and 0.7.0.
+open_pr 9e "feat: e2e misdetected licences" "$(package_json 9e '{"json-schema-typed": "8.0.2", "leac": "0.7.0"}' '{}')" \
+  "$(package_json 9e-old '{"leac": "0.6.0"}' '{}')" "$(changeset 9e)"
 run=$(wait_run "$PR_SHA" 1)
-DR_MESSAGE="Every excepted dependency still has its approved licence." expect "9e" "$run" 1 success success
+DR_MESSAGE="leac@0.6.0: reports MIT, the exception approved JSON AND MIT" expect "9e" "$run" 1 success success
 
 # Workflow lockfile scenarios. The workflows never run (workflow_dispatch only).
 # The lockfiles are written as `gh actions-lock --no-narrow` v0.4.1 writes them;

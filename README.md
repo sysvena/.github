@@ -120,7 +120,9 @@ the job in `sysvena-gates.yml`; in short:
   `LICENSE_EXCEPTIONS` in that job: `{purl, license, reason}`, with the purl
   without a version and the licence as the dependency graph reports it
   (`NOASSERTION` when none). An exception covers every version, but the gate
-  fails when an added version reports another licence. A repository cannot add
+  fails when an added version reports another licence, unless the allow list
+  covers that licence on its own (then it prints a notice, so an exception no
+  version needs any more is removed). A repository cannot add
   its own exceptions, so a PR cannot loosen its own check; an exception reaches
   the repositories through the release steps below.
 - **Own packages** (`@sysvena/*` from GitHub Packages) have no licence data in
