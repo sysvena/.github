@@ -303,6 +303,11 @@ open_pr 5c "feat: e2e second reviewed advisory" "$(package_json 5c '{"minimatch"
 run=$(wait_run "$PR_SHA" 1)
 DR_MESSAGE="Every added dependency has a detected licence or a reviewed exception." expect "5c" "$run" 1 success success
 
+log "5d. Dependency with a reviewed advisory that has no fix (picomatch 2.3.2, GHSA-fc5q-39xc-vjpf in ALLOW_GHSAS)"
+open_pr 5d "feat: e2e reviewed advisory without a fix" "$(package_json 5d '{"picomatch": "2.3.2"}' '{}')" "$(changeset 5d)"
+run=$(wait_run "$PR_SHA" 1)
+DR_MESSAGE="Every added dependency has a detected licence or a reviewed exception." expect "5d" "$run" 1 success success
+
 log "6. Dependency with a licence outside the allow list (webextension-polyfill, MPL-2.0, no exception)"
 open_pr 6 "feat: e2e dependency with a reviewed-only licence" "$(package_json 6 '{"webextension-polyfill": "0.12.0"}' '{}')" "$(changeset 6)"
 run=$(wait_run "$PR_SHA" 1)
