@@ -538,20 +538,23 @@ jobs:
           fi
 
           # Excepted packages must still have the licence that was approved,
-          # or one the allow list covers on its own (every licence identifier
-          # in the expression is on ALLOW_LICENSES; WITH, NOASSERTION and
-          # LicenseRef-* never are).
+          # or one the allow list covers on its own: every licence identifier
+          # in the SPDX expression is on ALLOW_LICENSES, compared without case
+          # (SPDX 3.0.1 annex "SPDX license expressions": identifiers match
+          # case-insensitively; AND/and and OR/or are operators). WITH, NOASSERTION, LicenseRef-* and
+          # anything else not on the list never count as allowed.
           if [ "$(jq length <<< "$LICENSE_EXCEPTIONS")" -gt 0 ]; then
             gh api --paginate "repos/$REPO/dependency-graph/compare/$BASE_SHA...$HEAD_SHA" --jq '.[]' \
               | jq -s . > dependency-changes.json
             checked=$(jq -c --argjson ex "$LICENSE_EXCEPTIONS" --arg allow "$ALLOW_LICENSES" '
               def base: ascii_downcase | sub("[?#].*$"; "") | sub("@[^/@]*$"; "");
-              ($allow | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $ok
+              ($allow | split(",") | map(gsub("^\\s+|\\s+$"; "") | ascii_downcase) | map(select(length > 0))) as $ok
               | .[] | select(.change_type == "added") | . as $c
               | ($ex[] | select((.purl | base) == ($c.package_url | base))) as $e
               | ($c.license // "NOASSERTION") as $got
               | select($got != $e.license)
-              | ($got | gsub("[()]"; " ") | split(" ") | map(select(length > 0 and . != "AND" and . != "OR"))) as $ids
+              | ($got | gsub("[()]"; " ") | split(" ")
+                 | map(select(length > 0 and . != "AND" and . != "and" and . != "OR" and . != "or")) | map(ascii_downcase)) as $ids
               | {allowed: (($ids | length) > 0 and all($ids[]; . as $id | $ok | index([$id]) != null)),
                  line: "  \($c.manifest) » \($c.name)@\($c.version): reports \($got), the exception approved \($e.license) (\($e.purl))"}
               ' dependency-changes.json)

@@ -566,6 +566,14 @@ dr_check_case "excepted package with a WITH exception fails" fail success "$none
   "[$(add pkg:npm/elkjs@0.10.0 '"Apache-2.0 WITH LLVM-exception"')]" "reports Apache-2.0 WITH LLVM-exception"
 dr_check_case "excepted package with a LicenseRef fails" fail success "$none" "$ex_elk" \
   "[$(add pkg:npm/elkjs@0.10.0 '"LicenseRef-scancode-free-unknown"')]" "reports LicenseRef-scancode-free-unknown"
+dr_check_case "lower-case operators and identifiers count as SPDX allows" pass success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.10.0 '"mit and (isc or apache-2.0)"')]" "this version needs no exception"
+dr_check_case "a mixed-case operator is not an operator" fail success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.10.0 '"MIT And ISC"')]" "reports MIT And ISC"
+dr_check_case "lower-case with is not allowed either" fail success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.10.0 '"apache-2.0 with llvm-exception"')]" "reports apache-2.0 with llvm-exception"
+dr_check_case "an or-later plus is not the plain identifier" fail success "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.10.0 '"Apache-2.0+"')]" "reports Apache-2.0+"
 dr_check_case "an allowed name inside a longer identifier is not allowed" fail success "$none" "$ex_elk" \
   "[$(add pkg:npm/elkjs@0.10.0 '"MIT-Modern-Variant"')]" "reports MIT-Modern-Variant"
 dr_check_case "unknown licence and changed exception are both reported" fail success \
