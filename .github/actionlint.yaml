@@ -1,0 +1,12 @@
+# actionlint configuration (rhysd/actionlint docs/config.md).
+paths:
+  # The documented job context properties job.workflow_repository and
+  # job.workflow_sha (GitHub Docs, "Contexts": a reusable workflow checks out
+  # its own source code with them) are not known to actionlint 1.7.12
+  # (rhysd/actionlint#707, open). Only that error, only for these two
+  # properties of the job context (its type is named in the message), only in
+  # this file. Remove this entry when the actionlint image in
+  # tools/actionlint/Dockerfile has the fix; then the gates can use them too.
+  .github/workflows/dependabot-changeset.yml:
+    ignore:
+      - '^property "workflow_(repository|sha)" is not defined in object type \{check_run_id: number; container: \{id: string; network: string\}; services: .+; status: string\}$'
