@@ -160,6 +160,38 @@ job_result() { # <run id> <attempt> <job name>
   gh_read "repos/$canary/actions/runs/$1/attempts/$2/jobs" --jq ".jobs[] | select(.name == \"$3\") | .conclusion"
 }
 
+# The steps of each gate, by step name as GitHub reports them: "<gate> job|steps
+# it needs|its own steps". A gate failed when any of these steps failed or was
+# cancelled, and succeeded otherwise (also when it did not apply), as a job of
+# its own did before the gates were merged into two jobs. Kept apart from the
+# workflow's own Summary step, so the test does not trust what it tests.
+lib='Gates library,Move the gates library out of the workspace'
+declare -A gate_steps=(
+  ["PR title"]="Gates|$lib,Read the PR|PR title"
+  ["PR description"]="Gates|$lib,Read the PR|PR description"
+  ["Regression test"]="Gates|$lib,Read the PR|Regression test"
+  ["Dependency review"]="Gates|$lib|Dependency review: licence exceptions,Dependency review,Dependency review: unknown and excepted licences"
+  ["Workflow lockfile"]="Gates|$lib|Workflow lockfile: check out the PR,Workflow lockfile: find workflows,Workflow lockfile: install gh-actions-lock,Workflow lockfile"
+  ["Changeset"]="Repo checks|$lib,Check out the PR,Set up Node,Install dependencies|Changeset: prepare,Changeset"
+  ["Repo checks"]="Repo checks|$lib,Check out the PR|Detect,Nothing to check,Set up Node,Node version,Lessons,Install dependencies,Agent rules"
+)
+
+# gate_result <run id> <attempt> <gate>: prints success or failure.
+gate_result() {
+  local spec=${gate_steps[$3]} job names
+  job=${spec%%|*}
+  names=${spec#*|}
+  names=${names/|/,}
+  gh_read "repos/$canary/actions/runs/$1/attempts/$2/jobs" --jq "
+    (\"$names\" | split(\",\")) as \$names
+    | [.jobs[] | select(.name == \"$job\") | .steps[] | select(.name as \$n | \$names | index([\$n])) | .conclusion]
+    | if length == 0 then \"missing\"
+      elif any(.[]; . == \"failure\" or . == \"cancelled\") then \"failure\" else \"success\" end"
+}
+
+# shellcheck disable=SC2329 # called through check
+lacks() { ! grep -qF -- "$1" <<< "$2"; } # <text> <in>
+
 # check <description> <command...>: one test result, from the command's status.
 check() {
   local what=$1
@@ -167,12 +199,13 @@ check() {
   if "$@"; then pass "$what"; else fail "$what"; fi
 }
 
-# expect <label> <run id> <attempt> <PR title> <regression test> [message the regression job prints]
-# Checks job results and what every run must show: the candidate version, the
+# expect <label> <run id> <attempt> <PR title> <regression test> [message the regression gate prints]
+# Checks gate results and what every run must show: the candidate version, the
 # canary's Node version and the lessons check. Dependency review, Changeset and
 # Workflow lockfile must succeed unless DR_WANT/DR_MESSAGE, CS_WANT/CS_MESSAGE or
 # LF_WANT/LF_MESSAGE say otherwise; Repo checks likewise with REPO_WANT/REPO_MESSAGE
-# (set them for one call only).
+# (set them for one call only). Each job must fail exactly when one of its
+# gates failed, and its summary must show each gate's result.
 expect() {
   local label=$1 run=$2 attempt=$3 want_title=$4 want_changes=$5 message=${6:-}
   local want_dr=${DR_WANT:-success} dr_message=${DR_MESSAGE:-}
@@ -180,47 +213,54 @@ expect() {
   local want_lf=${LF_WANT:-success} lf_message=${LF_MESSAGE:-}
   local want_desc=${DESC_WANT:-success} desc_message=${DESC_MESSAGE:-}
   local want_repo=${REPO_WANT:-success} repo_message=${REPO_MESSAGE:-}
-  local title changes repo dr cs lf detect_log changes_log repo_log dr_log cs_log lf_log
-  title=$(job_result "$run" "$attempt" "PR title")
-  changes=$(job_result "$run" "$attempt" "Regression test")
-  cs=$(job_result "$run" "$attempt" "Changeset")
-  check "$label: changeset $want_cs (got $cs)" [ "$cs" = "$want_cs" ]
-  if [ -n "$cs_message" ]; then
-    cs_log=$(job_log "$run" "$attempt" "Changeset")
-    check "$label: changeset says \"$cs_message\"" grep -qF -- "$cs_message" <<< "$cs_log"
+  local gates_log repo_log gate got want job_want
+  gates_log=$(job_log "$run" "$attempt" "Gates")
+  repo_log=$(job_log "$run" "$attempt" "Repo checks")
+  declare -A wants=(["PR title"]=$want_title ["PR description"]=$want_desc ["Regression test"]=$want_changes
+    ["Dependency review"]=$want_dr ["Workflow lockfile"]=$want_lf ["Changeset"]=$want_cs ["Repo checks"]=$want_repo)
+  for gate in "PR title" "PR description" "Regression test" "Dependency review" "Workflow lockfile" "Changeset" "Repo checks"; do
+    got=$(gate_result "$run" "$attempt" "$gate")
+    want=${wants[$gate]}
+    check "$label: $gate $want (got $got)" [ "$got" = "$want" ]
+  done
+  # Each gate's line in the job summary (also printed in the log).
+  for gate in "PR title" "PR description" "Regression test" "Dependency review" "Workflow lockfile"; do
+    if [ "${wants[$gate]}" = failure ]; then
+      check "$label: summary shows $gate failed" grep -qF "| $gate | ❌ failed |" <<< "$gates_log"
+    else
+      check "$label: summary does not show $gate failed" lacks "| $gate | ❌ failed |" "$gates_log"
+    fi
+  done
+  job_want=success
+  for gate in "PR title" "PR description" "Regression test" "Dependency review" "Workflow lockfile"; do
+    [ "${wants[$gate]}" = failure ] && job_want=failure
+  done
+  got=$(job_result "$run" "$attempt" "Gates")
+  check "$label: job Gates $job_want (got $got)" [ "$got" = "$job_want" ]
+  job_want=success
+  [ "$want_cs" = failure ] && job_want=failure
+  [ "$want_repo" = failure ] && job_want=failure
+  got=$(job_result "$run" "$attempt" "Repo checks")
+  check "$label: job Repo checks $job_want (got $got)" [ "$got" = "$job_want" ]
+  if [ -n "$message" ]; then
+    check "$label: regression test says \"$message\"" grep -qF -- "$message" <<< "$gates_log"
   fi
-  repo=$(job_result "$run" "$attempt" "Repo checks")
-  dr=$(job_result "$run" "$attempt" "Dependency review")
-  check "$label: dependency review $want_dr (got $dr)" [ "$dr" = "$want_dr" ]
-  if [ -n "$dr_message" ]; then
-    dr_log=$(job_log "$run" "$attempt" "Dependency review")
-    check "$label: dependency review says \"$dr_message\"" grep -qF -- "$dr_message" <<< "$dr_log"
-  fi
-  lf=$(job_result "$run" "$attempt" "Workflow lockfile")
-  check "$label: workflow lockfile $want_lf (got $lf)" [ "$lf" = "$want_lf" ]
-  desc=$(job_result "$run" "$attempt" "PR description")
-  check "$label: PR description $want_desc (got $desc)" [ "$desc" = "$want_desc" ]
   if [ -n "$desc_message" ]; then
-    desc_log=$(job_log "$run" "$attempt" "PR description")
-    check "$label: PR description says \"$desc_message\"" grep -qF -- "$desc_message" <<< "$desc_log"
+    check "$label: PR description says \"$desc_message\"" grep -qF -- "$desc_message" <<< "$gates_log"
+  fi
+  if [ -n "$dr_message" ]; then
+    check "$label: dependency review says \"$dr_message\"" grep -qF -- "$dr_message" <<< "$gates_log"
   fi
   if [ -n "$lf_message" ]; then
-    lf_log=$(job_log "$run" "$attempt" "Workflow lockfile")
-    check "$label: workflow lockfile says \"$lf_message\"" grep -qF -- "$lf_message" <<< "$lf_log"
+    check "$label: workflow lockfile says \"$lf_message\"" grep -qF -- "$lf_message" <<< "$gates_log"
   fi
-  detect_log=$(job_log "$run" "$attempt" "Detect checks")
-  changes_log=$(job_log "$run" "$attempt" "Regression test")
-  repo_log=$(job_log "$run" "$attempt" "Repo checks")
-  check "$label: PR title $want_title (got $title)" [ "$title" = "$want_title" ]
-  check "$label: regression test $want_changes (got $changes)" [ "$changes" = "$want_changes" ]
-  if [ -n "$message" ]; then
-    check "$label: regression test says \"$message\"" grep -qF -- "$message" <<< "$changes_log"
+  if [ -n "$cs_message" ]; then
+    check "$label: changeset says \"$cs_message\"" grep -qF -- "$cs_message" <<< "$repo_log"
   fi
-  check "$label: ran $candidate" grep -qF "sysvena gates version: $candidate" <<< "$detect_log"
-  check "$label: repo checks $want_repo (got $repo)" [ "$repo" = "$want_repo" ]
   if [ -n "$repo_message" ]; then
     check "$label: repo checks say \"$repo_message\"" grep -qF -- "$repo_message" <<< "$repo_log"
   fi
+  check "$label: ran $candidate" grep -qF "sysvena gates version: $candidate" <<< "$gates_log"
   check "$label: Node v$node_wanted from .nvmrc" grep -qx "Node v$node_wanted" <<< "$repo_log"
   # The step itself, not its output: the canary's stand-in and the lessons
   # check of the Open Mercato template print different lines.

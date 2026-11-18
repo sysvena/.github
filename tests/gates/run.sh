@@ -34,19 +34,20 @@ extract() {
     exit 2
   fi
 }
-extract detect "Detect" "$tmp/detect.sh"
-extract detect "Read the PR" "$tmp/read.sh"
-extract pr-title "Check the PR title" "$tmp/title.sh"
-extract changes "Check changed files" "$tmp/changes.sh"
-extract pr-description "Check the PR description" "$tmp/description.sh"
-extract changeset "Prepare the changeset check" "$tmp/cs-prepare.sh"
-extract dependency-review "Prepare licence exceptions" "$tmp/dr-prepare.sh"
-extract dependency-review "Check unknown and excepted licences" "$tmp/dr-check.sh"
-extract workflow-lockfile "Find workflows" "$tmp/lf-find.sh"
-extract workflow-lockfile "Install gh-actions-lock" "$tmp/lf-install.sh"
-extract workflow-lockfile "Verify the lockfile" "$tmp/lf-verify.sh"
-extract changeset "Install dependencies" "$tmp/cs-install.sh"
-extract repo-checks "Install dependencies" "$tmp/rc-install.sh"
+extract repo-checks "Detect" "$tmp/detect.sh"
+extract gates "Read the PR" "$tmp/read.sh"
+extract gates "PR title" "$tmp/title.sh"
+extract gates "Regression test" "$tmp/changes.sh"
+extract gates "PR description" "$tmp/description.sh"
+extract repo-checks "Changeset: prepare" "$tmp/cs-prepare.sh"
+extract gates "Dependency review: licence exceptions" "$tmp/dr-prepare.sh"
+extract gates "Dependency review: unknown and excepted licences" "$tmp/dr-check.sh"
+extract gates "Workflow lockfile: find workflows" "$tmp/lf-find.sh"
+extract gates "Workflow lockfile: install gh-actions-lock" "$tmp/lf-install.sh"
+extract gates "Workflow lockfile" "$tmp/lf-verify.sh"
+extract repo-checks "Install dependencies" "$tmp/install.sh"
+extract gates "Summary" "$tmp/gates-summary.sh"
+extract repo-checks "Summary" "$tmp/repo-summary.sh"
 
 report() { # <ok> <name> <detail>
   if [ "$1" = true ]; then
@@ -480,8 +481,8 @@ detect_case "other @sysvena package is not agent rules" "agent-rules=false lesso
   'package.json:{"devDependencies":{"@sysvena/agent-rules-extra":"1.0.0"}}'
 
 echo "# Dependency review: policy"
-dr='.jobs."dependency-review"'
-review="$dr.steps[] | select(.name == \"Review dependency changes\")"
+dr='.jobs.gates'
+review="$dr.steps[] | select(.name == \"Dependency review\")"
 policy_case "action pinned to the v5.0.0 commit" "$review | .uses" \
   "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294"
 policy_case "fails on every severity" "$review | .with.\"fail-on-severity\"" "low"
@@ -498,11 +499,14 @@ policy_case "only the policy inputs are set" "$review | .with | keys | join(\",\
   "fail-on-severity,fail-on-scopes,allow-licenses,allow-dependencies-licenses,allow-ghsas"
 policy_case "allow list as decided" "$dr.env.ALLOW_LICENSES" \
   "MIT, MIT-0, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD, BlueOak-1.0.0, Zlib, Python-2.0, AFL-2.1, AFL-3.0, CC0-1.0, Unlicense, CC-BY-4.0"
-policy_case "read-only token" "$dr.permissions | to_entries | map(.key + \"=\" + .value) | join(\",\")" "contents=read"
-policy_case "no checkout of the PR (a PR cannot change the policy)" \
-  "[$dr.steps[] | select(.uses // \"\" | test(\"checkout\")) | select(.with.repository != \"sysvena/.github\" or .with.ref != \"\${{ github.workflow_sha }}\")] | length" "0"
-policy_case "the only checkout is the gates library" \
-  "[$dr.steps[] | select(.uses // \"\" | test(\"checkout\")) | .name] | join(\",\")" "Gates library"
+policy_case "read-only token" "$dr.permissions | to_entries | map(.key + \"=\" + .value) | join(\",\")" "contents=read,pull-requests=read"
+# The policy comes from this workflow only: the job checks out nothing but
+# the gates library until the dependency review steps are done (the
+# Workflow lockfile gate checks out the PR after them).
+policy_case "no checkout of the PR before the dependency review is done" \
+  "[$dr.steps[] | select(.uses // \"\" | test(\"checkout\")) | select(.with.repository != \"sysvena/.github\" or .with.ref != \"\${{ github.workflow_sha }}\")] | .[0].name" "Workflow lockfile: check out the PR"
+policy_case "the PR checkout comes after every dependency review step" \
+  "[$dr.steps[] | .name] | (to_entries | map(select(.value == \"Workflow lockfile: check out the PR\")) | .[0].key) > (to_entries | map(select(.value | test(\"^Dependency review\"))) | map(.key) | max)" "true"
 
 echo "# Dependency review: licence exceptions"
 dr_prepare_case "the exceptions in the workflow are valid" pass \
@@ -593,9 +597,9 @@ dr_check_case "unknown licence and changed exception are both reported" fail suc
   "$ex_elk" "[$(add pkg:npm/elkjs@0.10.0 '"GPL-3.0-only"')]" "reports GPL-3.0-only"
 
 echo "# Workflow lockfile: policy"
-policy_case "job reads contents only" '.jobs.workflow-lockfile.permissions | to_entries | map(.key + "=" + .value) | join(",")' "contents=read"
-policy_case "extension version pinned" '.jobs.workflow-lockfile.env.GH_ACTIONS_LOCK_VERSION | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")' "true"
-policy_case "extension SHA-256 pinned" '.jobs.workflow-lockfile.env.GH_ACTIONS_LOCK_SHA256 | test("^[0-9a-f]{64}$")' "true"
+policy_case "Gates job reads contents and PRs only" '.jobs.gates.permissions | to_entries | map(.key + "=" + .value) | join(",")' "contents=read,pull-requests=read"
+policy_case "extension version pinned" '.jobs.gates.env.GH_ACTIONS_LOCK_VERSION | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")' "true"
+policy_case "extension SHA-256 pinned" '.jobs.gates.env.GH_ACTIONS_LOCK_SHA256 | test("^[0-9a-f]{64}$")' "true"
 # A tag ref in the gates breaks ruleset runs once the lockfile is used (tested
 # on gates-canary), and --no-narrow keeps SHA pins: every step `uses:` of the
 # gates is a full commit SHA.
@@ -717,11 +721,59 @@ dr_check_case "an HTTP 502 from the compare API is retried" pass failure "$none"
   "[$(add pkg:npm/elkjs@0.9.3 '"EPL-2.0"')]" "gh_read: HTTP 502" yes
 lf_install_case "a broken download of gh-actions-lock is retried" pass binary "$good_sha" "" "retry 1 of 3"
 unset FAIL_ONCE
-for job in cs rc; do
-  install_case "$job: a broken Yarn download by Corepack is retried" "$tmp/$job-install.sh" 1
-  install_case "$job: Yarn installs when Corepack works at once" "$tmp/$job-install.sh" 0
-  install_case "$job: a lasting Corepack failure stops before yarn install" "$tmp/$job-install.sh" 4
+install_case "a broken Yarn download by Corepack is retried" "$tmp/install.sh" 1
+install_case "Yarn installs when Corepack works at once" "$tmp/install.sh" 0
+install_case "a lasting Corepack failure stops before yarn install" "$tmp/install.sh" 4
+
+echo "# Two jobs, split by trust"
+policy_case "the jobs are Gates and Repo checks" '[.jobs | to_entries[] | .key + "=" + .value.name] | join(",")' \
+  "gates=Gates,repo-checks=Repo checks"
+# The Gates job runs no code from the PR: no package manager, Node or PR
+# script in any of its steps, and its only actions are checkout, dependency
+# review (both pinned above).
+policy_case "Gates runs no package manager, Node or PR script" \
+  '[.jobs.gates.steps[] | .run // "" | select(test("(?m)(^|[;&|(]|\\s)(yarn|npm|npx|pnpm|corepack|node|bun|make|bash|sh|\\./|scripts/)\\b"))] | length' "0"
+policy_case "Gates uses only checkout and dependency review" \
+  '[.jobs.gates.steps[] | select(has("uses")) | .uses | sub("@.*"; "")] | unique | join(",")' \
+  "actions/checkout,actions/dependency-review-action"
+policy_case "Repo checks reads contents and packages only" \
+  '.jobs."repo-checks".permissions | to_entries | map(.key + "=" + .value) | join(",")' "contents=read,packages=read"
+# Every gate runs after another gate failed: each step after the gates
+# library and the checkout guards itself with !cancelled() (or always()).
+policy_case "every later step runs after a failure" \
+  '[.jobs[].steps[] | select(.name != "Gates version" and .name != "Gates library" and .name != "Move the gates library out of the workspace" and .name != "Check out the PR") | .if // "" | select(test("^\\$\\{\\{ (!cancelled\\(\\)|always\\(\\))") | not)] | length' "0"
+# The summary names only step ids its job has, and every gate step.
+for job in gates repo-checks; do
+  ids=$(yq ".jobs.\"$job\".steps[] | .id // \"\"" "$workflow" | sort -u | tr '\n' ' ')
+  listed=$(yq ".jobs.\"$job\".steps[] | select(.name == \"Summary\") | .env.GATES" "$workflow" | sed 's/^[^=]*=//' | tr ',;' '\n' | sort -u)
+  missing=""
+  for id in $listed; do [[ " $ids " == *" $id "* ]] || missing+=" $id"; done
+  report "$([ -z "$missing" ] && echo true || echo false)" "$job: summary lists only existing steps" "unknown ids:$missing"
 done
+gate_ids=$(yq '.jobs.gates.steps[] | select(.name | test("^(PR title|PR description|Regression test|Dependency review|Workflow lockfile)")) | .id' "$workflow" | sort | tr '\n' ' ')
+own_ids=$(yq '.jobs.gates.steps[] | select(.name == "Summary") | .env.GATES' "$workflow" | sed 's/^[^;]*;//' | tr ',' '\n' | grep -v '^$' | sort | tr '\n' ' ')
+report "$([ "$gate_ids" = "$own_ids" ] && echo true || echo false)" "gates: every gate step is some gate's own step" "gate steps: $gate_ids"$'\n'"own:        $own_ids"
+
+# summary_case <name> <script> <GATES> <steps JSON> <expected table rows, ';'-separated>
+summary_case() {
+  local out="$tmp/summary.md" got
+  rm -f "$out"
+  got=$(STEPS="$4" GATES="$3" GITHUB_STEP_SUMMARY="$out" bash -e "$2" 2>&1 | tail -n +3 | tr '\n' ';')
+  report "$([ "$got" = "$5;" ] && [ -s "$out" ] && echo true || echo false)" "$1" "got:  $got"$'\n'"want: $5;"
+}
+echo "# Summary"
+summary_case "own step succeeded: passed" "$tmp/gates-summary.sh" "G=a;b" \
+  '{"a":{"outcome":"success"},"b":{"outcome":"success"}}' "| G | ✅ passed |"
+summary_case "own step failed: failed" "$tmp/gates-summary.sh" "G=a;b,c" \
+  '{"a":{"outcome":"success"},"b":{"outcome":"success"},"c":{"outcome":"failure"}}' "| G | ❌ failed |"
+summary_case "a needed step failed, own skipped: failed" "$tmp/gates-summary.sh" "G=a;b" \
+  '{"a":{"outcome":"failure"},"b":{"outcome":"skipped"}}' "| G | ❌ failed |"
+summary_case "own steps skipped: did not apply" "$tmp/gates-summary.sh" "G=a;b" \
+  '{"a":{"outcome":"success"},"b":{"outcome":"skipped"}}' "| G | ➖ did not apply |"
+summary_case "own step missing from steps: did not apply" "$tmp/gates-summary.sh" "G=a;b" \
+  '{"a":{"outcome":"success"}}' "| G | ➖ did not apply |"
+summary_case "cancelled counts as failed" "$tmp/repo-summary.sh" $'G=a;b\nH=;c' \
+  '{"a":{"outcome":"success"},"b":{"outcome":"cancelled"},"c":{"outcome":"success"}}' "| G | ❌ failed |;| H | ✅ passed |"
 
 echo
 echo "$passed passed, $failed failed"

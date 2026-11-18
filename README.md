@@ -59,6 +59,16 @@ does. The gates read the title, labels, description and files of the PR from
 the API, so a manual
 re-run of an older run also checks the current PR (see "Re-running the gates").
 
+The gates run in two jobs, split by trust. **Gates** holds the ones that run
+no code from the PR (PR title, PR description, Regression test, Dependency
+review, Workflow lockfile). **Repo checks** holds the ones that do (Changeset,
+lessons, agent rules: they install the PR's dependencies and run its
+scripts), so that code can never change the result of a gate in the other
+job. Each gate is a step named after it (or several, `<gate>: …`); every gate
+runs even when another one failed, and each job's summary lists every gate as
+passed, failed or did not apply. Two jobs, not one per gate, because GitHub
+bills every job as at least one whole minute.
+
 Gates:
 
 - **PR title** — `<type>(<area>): <summary>`, at most 72 characters; type
@@ -93,7 +103,7 @@ Gates:
   `.github/workflows/actions.lock` and every action pinned to a commit SHA
   (see "Workflow lockfile").
 
-Transient network errors do not fail a gate. Each job checks out
+Transient network errors do not fail a gate. Both jobs check out
 `scripts/lib` of this repository at the commit the gates run from
 (`github.workflow_sha`) and uses it:
 
@@ -118,12 +128,12 @@ upload artifacts set `retention-days: 7`.
 
 ## Dependency review
 
-The job runs `actions/dependency-review-action`, the way GitHub documents
+The gate runs `actions/dependency-review-action`, the way GitHub documents
 enforcing dependency review across an organization (a ruleset that requires a
 workflow running it). It needs GitHub Code Security on private repositories;
 the org security configuration `sysvena` enables it, with the dependency
 graph, on every repository. The policy and its sources are in the comment above
-the job in `sysvena-gates.yml`; in short:
+its steps in the Gates job of `sysvena-gates.yml`; in short:
 
 - **Vulnerabilities:** every severity, scopes runtime, development and unknown.
   If a vulnerability cannot be fixed, its GHSA id goes into `ALLOW_GHSAS`
@@ -137,7 +147,7 @@ the job in `sysvena-gates.yml`; in short:
   detect fails too.
 - **Exceptions** (for example a weak-copyleft package such as one under MPL-2.0
   or LGPL-3.0, or one with no detected licence) live only in
-  `LICENSE_EXCEPTIONS` in that job: `{purl, license, reason}`, with the purl
+  `LICENSE_EXCEPTIONS` of the Gates job: `{purl, license, reason}`, with the purl
   without a version and the licence as the dependency graph reports it
   (`NOASSERTION` when none). An exception covers every version, but the gate
   fails when an added version reports another licence, unless the allow list
@@ -174,11 +184,11 @@ another repository; that repository's own lockfile does not.
   Run it after every workflow change and commit the lockfile with it. Never
   edit the lockfile by hand. Dependabot updates the pin and the lockfile in one
   PR.
-- **Gate:** the job runs `gh actions-lock --verify` (the binary pinned by
+- **Gate:** the step runs `gh actions-lock --verify` (the binary pinned by
   version and SHA-256) and fails when the lockfile is missing, does not verify,
   has any finding other than `sha-as-ref` (which every SHA pin reports), or
   when an action is used directly without a SHA pin. The policy and its
-  sources are in the comment above the job in `sysvena-gates.yml`.
+  sources are in the comment above its steps in `sysvena-gates.yml`.
 - **Not covered by the lockfile:** reusable workflows from another repository
   (github/gh-actions-lock#179) and container images. Pin a `docker://` image
   by digest.
@@ -209,9 +219,12 @@ this repository, so a merge here changes nothing until that commit is moved.
 `require-sysvena-gates-canary` runs a candidate version there, and production
 excludes it.
 
-1. **Before merge:** run the end-to-end test on the PR's head commit:
-   `tests/e2e/gates-e2e.sh <commit>`. It points the canary ruleset at the commit,
-   opens test PRs on `gates-canary` (valid change; `fix` title without a test,
+1. **Before merge:** CI runs the gate tests (`tests/gates/run.sh`, the real
+   step scripts against fixtures) and actionlint. The end-to-end test
+   (`tests/e2e/gates-e2e.sh <commit>`) runs once, inside the promotion (step 3),
+   not also here: one run costs about a hundred gate runs of Actions minutes,
+   and production stays on its pinned commit until the promotion's test
+   passes. It points the canary ruleset at the commit, opens test PRs on `gates-canary` (valid change; `fix` title without a test,
    then a title edit and a `bug` label with re-runs; title without a type;
    a description without the self-check, then edited, with a re-run;
    title type `style`;
@@ -222,7 +235,8 @@ excludes it.
    an own package, an LGPL package (prebuilt libvips of sharp), a compound BSD licence (uri-js), two misdetected licences (json-schema-typed, leac), and MPL and Windows sharp packages with an exception for dependency review), checks each gate's result, the gates
    version the run reports, the canary's `.nvmrc` Node version and the lessons
    check, and closes the PRs and deletes their branches. Extend it when a gate
-   changes.
+   changes. When it fails during a promotion, production is unchanged: fix it
+   in a new PR.
 2. **Merge** the PR (CI must be green).
 3. **Promote:** `scripts/gates-promote.sh <merge commit on main>`. It runs the
    end-to-end test again on exactly that commit and moves the production
@@ -313,7 +327,8 @@ gh api -X POST "repos/$repo/actions/runs/$run/rerun"
 ```
 
 The API can return the previous state of a PR for a few seconds after a
-change. The `Detect checks` job logs the snapshot it checked (`PR snapshot:`);
+change. The Gates job logs the snapshot it checked (`PR snapshot:`, step
+"Read the PR");
 if it still shows the old title or labels, re-run again.
 
 Changes to the gates go through a PR here and apply to every repository at
