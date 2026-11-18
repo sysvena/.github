@@ -333,6 +333,13 @@ jobs:
           # Fetch the Yarn release in packageManager first, with retries:
           # Corepack itself fetches once (scripts/lib/retry-download.sh).
           retry_download corepack install
+          # GitHub Packages token for @sysvena/*, in the user configuration
+          # (~/.yarnrc.yml), where `yarn npm login` keeps it. A repository
+          # without a token in its .yarnrc.yml (the layout Dependabot needs,
+          # dependabot-core#16910) reads it from here; NPM_AUTH_TOKEN above
+          # stays for repositories whose .yarnrc.yml still reads the token
+          # from it: a project setting overrides the user one.
+          yarn config set --home npmScopes.sysvena.npmAuthToken "$NPM_AUTH_TOKEN" > /dev/null
           yarn install --immutable
 
       - name: Check for a changeset
@@ -411,6 +418,13 @@ jobs:
           # Fetch the Yarn release in packageManager first, with retries:
           # Corepack itself fetches once (scripts/lib/retry-download.sh).
           retry_download corepack install
+          # GitHub Packages token for @sysvena/*, in the user configuration
+          # (~/.yarnrc.yml), where `yarn npm login` keeps it. A repository
+          # without a token in its .yarnrc.yml (the layout Dependabot needs,
+          # dependabot-core#16910) reads it from here; NPM_AUTH_TOKEN above
+          # stays for repositories whose .yarnrc.yml still reads the token
+          # from it: a project setting overrides the user one.
+          yarn config set --home npmScopes.sysvena.npmAuthToken "$NPM_AUTH_TOKEN" > /dev/null
           yarn install --immutable
 
       - name: sysvena-agent-rules check
