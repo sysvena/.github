@@ -197,9 +197,10 @@ excludes it.
    a description without the self-check, then edited, with a re-run;
    title type `style`;
    shipped file without a changeset; README change without and with an empty
-   changeset; a PR that loosens the changeset config; a vulnerable development dependency, three with reviewed advisories, a
+   changeset; a PR that loosens the changeset config; a PR that edits the synced
+   agent rules (`.ai/project-rules.md`), which Repo checks must refuse; a vulnerable development dependency, three with reviewed advisories, a
    dependency under MPL-2.0, an action with no licence, a clean dependency and
-   an own package, an LGPL package (prebuilt libvips of sharp) a compound BSD licence (uri-js), two misdetected licences (json-schema-typed, leac), and MPL and Windows sharp packages with an exception for dependency review), checks each gate's result, the gates
+   an own package, an LGPL package (prebuilt libvips of sharp), a compound BSD licence (uri-js), two misdetected licences (json-schema-typed, leac), and MPL and Windows sharp packages with an exception for dependency review), checks each gate's result, the gates
    version the run reports, the canary's `.nvmrc` Node version and the lessons
    check, and closes the PRs and deletes their branches. Extend it when a gate
    changes.
