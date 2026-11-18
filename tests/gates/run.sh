@@ -680,7 +680,9 @@ desc_case "a branch merely containing changeset-release is not exempt" fail "" h
 
 # install_case <name> <step script> <corepack failures>
 # Runs an "Install dependencies" step with stub `corepack` (failing
-# `corepack install` the given number of times) and stub `yarn`.
+# `corepack install` the given number of times) and stub `yarn`. The step
+# must put the GitHub Packages token into the user configuration before
+# `yarn install`.
 install_case() {
   local name=$1 script=$2 fails=$3
   local work="$tmp/work" bin="$tmp/bin"
@@ -694,11 +696,11 @@ install_case() {
   printf '%s\n' '#!/usr/bin/env bash' 'echo "yarn $*" >> "$WORK/calls"' > "$bin/yarn"
   chmod +x "$bin/corepack" "$bin/yarn"
   local got=pass
-  (cd "$work" && WORK="$work" FAILS="$fails" PATH="$bin:$PATH" bash -e "$script" > "$work/log" 2>&1) || got=fail
+  (cd "$work" && WORK="$work" FAILS="$fails" NPM_AUTH_TOKEN=test-token PATH="$bin:$PATH" bash -e "$script" > "$work/log" 2>&1) || got=fail
   local calls want ok=true detail=""
   calls=$(tr '\n' ';' < "$work/calls")
   if [ "$fails" -le 3 ]; then
-    want="corepack enable;$(printf 'corepack install;%.0s' $(seq 0 "$fails"))yarn install --immutable;"
+    want="corepack enable;$(printf 'corepack install;%.0s' $(seq 0 "$fails"))yarn config set --home npmScopes.sysvena.npmAuthToken test-token;yarn install --immutable;"
     [ "$got" = pass ] || { ok=false; detail+="got $got, want pass"$'\n'"$(cat "$work/log")"$'\n'; }
   else
     want="corepack enable;corepack install;corepack install;corepack install;corepack install;"
