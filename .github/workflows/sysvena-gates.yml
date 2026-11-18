@@ -3,18 +3,35 @@ name: sysvena gates
 # Shared PR gates for every sysvena repository. The org ruleset
 # `require-sysvena-gates` requires this workflow on the default branch of every
 # repository, so GitHub runs it on each PR without any file in that repository.
-# It detects what to check from the repository itself:
+#
+# Two jobs, split by trust:
+#   - Gates: PR title, PR description, Regression test, Dependency review and
+#     Workflow lockfile. None of them runs code from the PR: they read the
+#     PR from the API and run only pinned tools on its files.
+#   - Repo checks: Changeset, lessons and agent rules. They run code from the
+#     PR (its dependencies' install scripts, its scripts and CLIs), so they
+#     stay in a job of their own: that code can change the environment of
+#     later steps in the same job (GITHUB_ENV, GITHUB_PATH, files), but never
+#     the Gates job.
+# Each gate is one or more steps named after it ("<gate>" or "<gate>: …").
+# Every gate runs even when another gate in the job failed (`!cancelled()`
+# plus the outcome of the steps it needs), so one run reports every failure;
+# the job summary lists each gate's result. Fewer jobs because GitHub bills
+# every job as at least one whole minute (eight short jobs cost ten minutes
+# for four minutes of work).
+#
+# Repo checks detects what to check from the repository itself:
 #   - changeset:   `.changeset/config.json` exists on the base commit
 #   - agent rules: package.json depends on `@sysvena/agent-rules`
 #   - lessons:     `scripts/check-lessons.mjs` exists
-# Dependency review runs in every repository (see the job for the policy).
-# Workflow lockfile runs when `.github/workflows` has workflows (see the job).
+# Dependency review runs in every repository (see the Gates job for the
+# policy). Workflow lockfile runs when `.github/workflows` has workflows.
 #
 # A ruleset runs a workflow only on the default `pull_request` activity types
 # (opened, synchronize, reopened) and ignores `types`, so none are set here.
 # The gates read the title, labels, body and files of the PR from the API, not from
 # the event payload, so a re-run of an older run checks the current PR. The
-# `detect` job reads the PR once and both gates use that one snapshot: the API
+# step "Read the PR" reads it once and every gate uses that one snapshot: the API
 # can return the previous state for a few seconds after a change, and separate
 # reads could then disagree. The log shows the snapshot that was checked.
 #
@@ -33,449 +50,14 @@ permissions:
   pull-requests: read
 
 jobs:
-  detect:
-    name: Detect checks
+  # The gates that run no code from the PR (see the header).
+  gates:
+    name: Gates
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      agent-rules: ${{ steps.detect.outputs.agent-rules }}
-      lessons: ${{ steps.detect.outputs.lessons }}
-      nvmrc: ${{ steps.detect.outputs.nvmrc }}
-      pr: ${{ steps.pr.outputs.pr }}
-    steps:
-      - name: Gates version
-        env:
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-        run: |
-          echo "sysvena gates version: $WORKFLOW_SHA ($WORKFLOW_REF)"
-
-      # The gates' own shell library (scripts/lib) at the commit these gates
-      # run from. The org ruleset runs this file as a workflow of its own (not
-      # a reusable one), so github.workflow_sha is that sysvena/.github commit,
-      # as "Gates version" prints and tests/e2e checks. (GitHub's documented
-      # job.workflow_repository / job.workflow_sha name it for reusable
-      # workflows too, but actionlint 1.7.12 rejects them: rhysd/actionlint#707.)
-      # actions/checkout retries a failed fetch. The library moves to
-      # $RUNNER_TEMP, so the workspace holds only the repository under check.
-      - name: Gates library
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: sysvena/.github
-          ref: ${{ github.workflow_sha }}
-          path: .sysvena-gates
-          sparse-checkout: scripts/lib
-          persist-credentials: false
-
-      - name: Move the gates library out of the workspace
-        run: |
-          mkdir -p "$RUNNER_TEMP/sysvena-gates"
-          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
-          rm -rf .sysvena-gates
-
-      - name: Read the PR
-        id: pr
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          # shellcheck source=/dev/null
-          . "$RUNNER_TEMP/sysvena-gates/lib/gh-retry.sh"
-          # One line of compact JSON: jq escapes any newline inside the title.
-          snapshot=$(gh_read "repos/$REPO/pulls/$PR" --jq '{title: .title, labels: [.labels[].name], body: (.body // "")}' | jq -c .)
-          echo "PR snapshot: $snapshot"
-          echo "pr=$snapshot" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Detect
-        id: detect
-        run: |
-          flag() { if eval "$1"; then echo true; else echo false; fi; }
-          {
-            echo "agent-rules=$(flag '[ -f package.json ] && grep -q "\"@sysvena/agent-rules\"" package.json')"
-            echo "lessons=$(flag '[ -f scripts/check-lessons.mjs ]')"
-            echo "nvmrc=$(flag '[ -f .nvmrc ]')"
-          } | tee -a "$GITHUB_OUTPUT"
-
-  pr-title:
-    name: PR title
-    needs: detect
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Check the PR title
-        env:
-          PR_SNAPSHOT: ${{ needs.detect.outputs.pr }}
-        run: |
-          set -euo pipefail
-          TITLE=$(jq -r '.title' <<< "$PR_SNAPSHOT")
-          if [[ "$TITLE" == *$'\n'* || "$TITLE" == *$'\r'* ]]; then
-            echo "::error::PR title must be one line."
-            exit 1
-          fi
-          pattern='^(feat|fix|chore|docs|style|refactor|test|perf|ci|build|revert)(\([a-z0-9][a-z0-9._-]*\))?!?: [^ ].*$'
-          if ! printf '%s' "$TITLE" | grep -Eq "$pattern"; then
-            echo "::error::PR title must be '<type>(<area>): <summary>' with type feat, fix, chore, docs, style, refactor, test, perf, ci, build or revert (the types of @commitlint/config-conventional). Got: $TITLE"
-            exit 1
-          fi
-          if [ "${#TITLE}" -gt 72 ]; then
-            echo "::error::PR title is ${#TITLE} characters; keep it at 72 or fewer."
-            exit 1
-          fi
-          echo "PR title OK: $TITLE"
-
-  # PR description: every PR ends with the self-check of project rules §3 and
-  # CODE_REVIEW.md: a "Sources/tests:" part, then a "Quality:" part, each with
-  # content. The label may be bold (**Sources/tests:**) or a heading
-  # (## Sources/tests:). Release PRs (`changeset-release/*`, written by the
-  # Changesets action) and Dependabot PRs are exempt: no agent writes them.
-  # Editing the description alone starts no run (see the header); re-run the
-  # job after the edit.
-  pr-description:
-    name: PR description
-    needs: detect
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Check the PR description
-        env:
-          PR_SNAPSHOT: ${{ needs.detect.outputs.pr }}
-          HEAD_REF: ${{ github.head_ref }}
-          AUTHOR: ${{ github.event.pull_request.user.login }}
-        run: |
-          set -euo pipefail
-          if [[ "$HEAD_REF" == changeset-release/* ]]; then
-            echo "Release PR ($HEAD_REF): no self-check needed."
-            exit 0
-          fi
-          if [ "$AUTHOR" = 'dependabot[bot]' ]; then
-            echo "Dependabot PR: no self-check needed."
-            exit 0
-          fi
-          # HTML comments (the PR template's hints) are not content.
-          jq -r '.body | gsub("(?s)<!--.*?-->"; "")' <<< "$PR_SNAPSHOT" | tr -d '\r' > body.txt
-          # Prints "<sources line> <quality line> <sources content> <quality content>"
-          # (line numbers of the first label of each kind, 0 when absent; content
-          # = 1 when non-blank text follows the label before the next label, the
-          # next heading, the "🤖 Generated with" attribution line or the end).
-          read -r s q sc qc < <(awk '
-            function label(name) { return $0 ~ "^(#+[ \t]+)?(\\*\\*)?" name ":(\\*\\*)?([ \t]|$)" }
-            {
-              rest = $0
-              if ($0 ~ /^(#|🤖)/ && !label("Sources/tests") && !label("Quality")) { part = ""; next }
-              if (label("Sources/tests") && !s) { s = NR; part = "s"; sub(/^.*Sources\/tests:(\*\*)?/, "", rest) }
-              else if (label("Quality") && !q) { q = NR; part = "q"; sub(/^.*Quality:(\*\*)?/, "", rest) }
-              if (rest ~ /[^ \t]/) { if (part == "s") sc = 1; else if (part == "q") qc = 1 }
-            }
-            END { print s + 0, q + 0, sc + 0, qc + 0 }' body.txt)
-          if [ "$s" = 0 ] || [ "$q" = 0 ]; then
-            echo "::error::The PR description must end with the self-check of project rules §3: a 'Sources/tests:' part, then a 'Quality:' part (bold or as headings)."
-            exit 1
-          fi
-          if [ "$s" -gt "$q" ]; then
-            echo "::error::In the PR description 'Sources/tests:' must come before 'Quality:'."
-            exit 1
-          fi
-          if [ "$sc" = 0 ] || [ "$qc" = 0 ]; then
-            echo "::error::'Sources/tests:' and 'Quality:' in the PR description each need content (for Quality, 'None.' when there is no gap)."
-            exit 1
-          fi
-          echo "PR description has the self-check (Sources/tests: line $s, Quality: line $q)."
-
-  changes:
-    name: Regression test
-    needs: detect
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      # The gates' own shell library (see Detect checks).
-      - name: Gates library
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: sysvena/.github
-          ref: ${{ github.workflow_sha }}
-          path: .sysvena-gates
-          sparse-checkout: scripts/lib
-          persist-credentials: false
-
-      - name: Move the gates library out of the workspace
-        run: |
-          mkdir -p "$RUNNER_TEMP/sysvena-gates"
-          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
-          rm -rf .sysvena-gates
-
-      - name: Check changed files
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          PR_SNAPSHOT: ${{ needs.detect.outputs.pr }}
-        run: |
-          set -euo pipefail
-          # shellcheck source=/dev/null
-          . "$RUNNER_TEMP/sysvena-gates/lib/gh-retry.sh"
-          jq -r '.title' <<< "$PR_SNAPSHOT" > title.txt
-          jq -r '.labels[]' <<< "$PR_SNAPSHOT" > labels.txt
-          gh_read --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename' > changed.txt
-          echo "Changed files:"; sed 's/^/  /' changed.txt
-
-          # Regression test: a bug fix (title type `fix` or label `bug`) changes a test,
-          # unless the maintainer waived it. A test is a file under __tests__/,
-          # __integration__/ or tests/, or a *.test.* / *.spec.* JS or TS file.
-          reason=""
-          if grep -Eq '^fix(\([a-z0-9][a-z0-9._-]*\))?!?: ' title.txt; then
-            reason="title type 'fix'"
-          elif grep -qx 'bug' labels.txt; then
-            reason="label 'bug'"
-          fi
-          if [ -z "$reason" ]; then
-            echo "Not a bug fix: no regression test needed."
-          elif grep -qx 'skip-regression-test' labels.txt; then
-            echo "Bug fix ($reason): regression test waived by the maintainer (skip-regression-test)."
-          elif grep -Eq '(^|/)(__tests__|__integration__|tests)/|\.(test|spec)\.[cm]?[jt]sx?$' changed.txt; then
-            echo "Bug fix ($reason): regression test present."
-          else
-            echo "::error::A bug fix ($reason) must add or change a test that fails without the fix. Only the maintainer may waive this with 'skip-regression-test'."
-            exit 1
-          fi
-
-  # Changeset: the check Changesets documents for requiring changesets
-  # ("Automating Changesets", blocking: `changeset status --since <base>`). It
-  # fails when a package that Changesets versions changed and the PR adds no
-  # changeset; a change that releases nothing adds `yarn changeset --empty`.
-  # What counts as a change and which packages are versioned (private packages
-  # only with `privatePackages.version`) comes from `.changeset/config.json`
-  # of the BASE commit, so a PR cannot loosen its own check; a change to it
-  # applies from the next PR. The CLI is the repository's own, installed from
-  # its lockfile. The release PR (`changeset-release/*`) consumes changesets
-  # and is exempt, as in the Changesets docs.
-  changeset:
-    name: Changeset
-    needs: detect
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
-      packages: read
-    steps:
-      # The gates' own shell library (see Detect checks).
-      - name: Gates library
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: sysvena/.github
-          ref: ${{ github.workflow_sha }}
-          path: .sysvena-gates
-          sparse-checkout: scripts/lib
-          persist-credentials: false
-
-      - name: Move the gates library out of the workspace
-        run: |
-          mkdir -p "$RUNNER_TEMP/sysvena-gates"
-          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
-          rm -rf .sysvena-gates
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: Prepare the changeset check
-        id: prepare
-        env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: |
-          set -euo pipefail
-          # The checkout is the PR's merge commit; its first parent is the base.
-          base=$(git rev-parse HEAD^1)
-          echo "Base commit: $base"
-          run=false
-          if [[ "$HEAD_REF" == changeset-release/* ]]; then
-            echo "Release PR: no changeset needed."
-          elif ! git cat-file -e "$base:.changeset/config.json" 2> /dev/null; then
-            if [ -f .changeset/config.json ]; then
-              echo "This PR adds Changesets: the changeset check applies from the next PR."
-            else
-              echo "No .changeset/config.json: changesets are not used in this repository."
-            fi
-          else
-            mkdir -p .changeset
-            git show "$base:.changeset/config.json" > .changeset/config.json
-            if git diff --quiet HEAD -- .changeset/config.json; then
-              echo "Using .changeset/config.json (unchanged by this PR)."
-            else
-              echo "Using .changeset/config.json of the base commit; this PR's change to it applies from the next PR."
-            fi
-            run=true
-          fi
-          { echo "run=$run"; echo "base=$base"; } >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: steps.prepare.outputs.run == 'true'
-        # Exactly one of the two inputs is non-empty (see Repo checks).
-        with:
-          node-version-file: ${{ needs.detect.outputs.nvmrc == 'true' && '.nvmrc' || '' }}
-          node-version: ${{ needs.detect.outputs.nvmrc != 'true' && '24' || '' }}
-
-      - name: Install dependencies
-        if: steps.prepare.outputs.run == 'true'
-        env:
-          NPM_AUTH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # shellcheck source=/dev/null
-          . "$RUNNER_TEMP/sysvena-gates/lib/retry-download.sh"
-          corepack enable
-          # Fetch the Yarn release in packageManager first, with retries:
-          # Corepack itself fetches once (scripts/lib/retry-download.sh).
-          retry_download corepack install
-          # GitHub Packages token for @sysvena/*, in the user configuration
-          # (~/.yarnrc.yml), where `yarn npm login` keeps it. A repository
-          # without a token in its .yarnrc.yml (the layout Dependabot needs,
-          # dependabot-core#16910) reads it from here; NPM_AUTH_TOKEN above
-          # stays for repositories whose .yarnrc.yml still reads the token
-          # from it: a project setting overrides the user one.
-          yarn config set --home npmScopes.sysvena.npmAuthToken "$NPM_AUTH_TOKEN" > /dev/null
-          yarn install --immutable
-
-      - name: Check for a changeset
-        if: steps.prepare.outputs.run == 'true'
-        env:
-          BASE: ${{ steps.prepare.outputs.base }}
-        run: |
-          if yarn changeset status --since "$BASE"; then
-            echo "Changeset check OK."
-          else
-            echo "::error::A package that Changesets versions changed, but this PR adds no changeset. Run \`yarn changeset\` and commit the file, or \`yarn changeset --empty\` if the change releases nothing."
-            exit 1
-          fi
-
-  repo-checks:
-    name: Repo checks
-    needs: detect
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - name: Nothing to check
-        if: needs.detect.outputs.agent-rules != 'true' && needs.detect.outputs.lessons != 'true'
-        run: echo "No lessons or agent rules in this repository."
-
-      # The gates' own shell library (see Detect checks).
-      - name: Gates library
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.detect.outputs.agent-rules == 'true'
-        with:
-          repository: sysvena/.github
-          ref: ${{ github.workflow_sha }}
-          path: .sysvena-gates
-          sparse-checkout: scripts/lib
-          persist-credentials: false
-
-      - name: Move the gates library out of the workspace
-        if: needs.detect.outputs.agent-rules == 'true'
-        run: |
-          mkdir -p "$RUNNER_TEMP/sysvena-gates"
-          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
-          rm -rf .sysvena-gates
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.detect.outputs.agent-rules == 'true' || needs.detect.outputs.lessons == 'true'
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: needs.detect.outputs.agent-rules == 'true' || needs.detect.outputs.lessons == 'true'
-        # Exactly one of the two inputs is non-empty: setup-node prefers
-        # node-version when both are set, and `cond && '' || x` is always x.
-        with:
-          node-version-file: ${{ needs.detect.outputs.nvmrc == 'true' && '.nvmrc' || '' }}
-          node-version: ${{ needs.detect.outputs.nvmrc != 'true' && '24' || '' }}
-
-      - name: Node version
-        if: needs.detect.outputs.agent-rules == 'true' || needs.detect.outputs.lessons == 'true'
-        run: echo "Node $(node --version)"
-
-      - name: Lessons
-        if: needs.detect.outputs.lessons == 'true'
-        run: node scripts/check-lessons.mjs
-
-      - name: Install dependencies
-        if: needs.detect.outputs.agent-rules == 'true'
-        env:
-          NPM_AUTH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # shellcheck source=/dev/null
-          . "$RUNNER_TEMP/sysvena-gates/lib/retry-download.sh"
-          corepack enable
-          # Fetch the Yarn release in packageManager first, with retries:
-          # Corepack itself fetches once (scripts/lib/retry-download.sh).
-          retry_download corepack install
-          # GitHub Packages token for @sysvena/*, in the user configuration
-          # (~/.yarnrc.yml), where `yarn npm login` keeps it. A repository
-          # without a token in its .yarnrc.yml (the layout Dependabot needs,
-          # dependabot-core#16910) reads it from here; NPM_AUTH_TOKEN above
-          # stays for repositories whose .yarnrc.yml still reads the token
-          # from it: a project setting overrides the user one.
-          yarn config set --home npmScopes.sysvena.npmAuthToken "$NPM_AUTH_TOKEN" > /dev/null
-          yarn install --immutable
-
-      - name: sysvena-agent-rules check
-        if: needs.detect.outputs.agent-rules == 'true'
-        run: yarn sysvena-agent-rules check
-
-  # Dependency review: a PR must not add a dependency with a known
-  # vulnerability or with a licence outside the policy. GitHub's documented way
-  # to enforce dependency review across an organization is a ruleset that
-  # requires a workflow running actions/dependency-review-action; this is it.
-  # The action compares the base and head commits through the dependency
-  # review REST API, so the job needs only `contents: read` and never checks
-  # out the PR: its one checkout is the gates library at the gates commit.
-  #
-  # Policy (sysvena/mercato-platform#15, decided 2026-11-15):
-  #   - Vulnerabilities of every severity (`low` and up) in every scope
-  #     (runtime, development, unknown): development dependencies run in CI
-  #     and on developer machines too (OWASP CICD-SEC-3).
-  #   - Licences: an allow list (the action's maintainers deprecate deny lists,
-  #     actions/dependency-review-action#938). ALLOW_LICENSES holds the
-  #     licences that both Google's classification (notice or unencumbered)
-  #     and the Blue Oak Council list (Bronze or better) rate permissive, plus
-  #     CC-BY-4.0 for data. Everything else, including weak copyleft (MPL, EPL,
-  #     LGPL), JSON and WTFPL, needs a reviewed exception.
-  #   - A dependency with no detected licence fails. The action only reports it
-  #     (actions/dependency-review-action#672; PR #1170 adds an option), so the
-  #     step "Check unknown and excepted licences" fails it.
-  #   - Exceptions live only here, so a PR cannot loosen its own check, and a
-  #     change reaches the repositories through the gate release steps.
-  #     LICENSE_EXCEPTIONS is a JSON array of {purl, license, reason}:
-  #       purl    package URL without a version, e.g. "pkg:npm/elkjs",
-  #               written as the dependency graph writes it ("%40" for "@")
-  #       license the licence the dependency graph reports for it, as an SPDX
-  #               expression, or NOASSERTION when it reports none
-  #       reason  who reviewed it, when, and why it is acceptable
-  #     An exception covers every version of the package, but the check fails
-  #     when an added version reports a licence other than the approved one,
-  #     unless every licence in what it reports is on ALLOW_LICENSES (then the
-  #     version needs no exception; the check prints a notice, so an exception
-  #     that no version needs any more is seen and removed).
-  #     A licence the dependency graph misdetects (ClearlyDefined data with a
-  #     licence the package does not carry) is excepted the same way, with
-  #     the licence text the package actually ships in the reason.
-  #   - A vulnerability that cannot be fixed yet goes into ALLOW_GHSAS below,
-  #     with the review behind it, through a PR.
-  dependency-review:
-    name: Dependency review
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
+      pull-requests: read
     env:
       ALLOW_LICENSES: >-
         MIT, MIT-0, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD,
@@ -595,9 +177,27 @@ jobs:
           {"purl": "pkg:npm/%40img/sharp-libvips-linuxmusl-x64", "license": "LGPL-3.0-or-later",
            "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."}
         ]
+      GH_ACTIONS_LOCK_VERSION: v0.4.1
+      GH_ACTIONS_LOCK_SHA256: 39deb2fe714dbf74b073d8245fc7f3d50cd0eee18d5c0900e9e849ae933ae17e
     steps:
-      # The gates' own shell library (see Detect checks).
+      - name: Gates version
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          echo "sysvena gates version: $WORKFLOW_SHA ($WORKFLOW_REF)"
+
+      # The org ruleset runs this file as a workflow of its own (not a
+      # reusable one), so github.workflow_sha is that sysvena/.github commit,
+      # as "Gates version" prints and tests/e2e checks. (GitHub's documented
+      # job.workflow_repository / job.workflow_sha name it for reusable
+      # workflows too, but actionlint 1.7.12 rejects them: rhysd/actionlint#707.)
+      # The gates' own shell library (scripts/lib) at the commit these gates
+      # run from (see "Gates version"). actions/checkout retries a failed
+      # fetch. The library moves to $RUNNER_TEMP, so the workspace holds only
+      # the repository under check.
       - name: Gates library
+        id: library
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: sysvena/.github
@@ -607,13 +207,189 @@ jobs:
           persist-credentials: false
 
       - name: Move the gates library out of the workspace
+        id: library-move
         run: |
           mkdir -p "$RUNNER_TEMP/sysvena-gates"
           mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
           rm -rf .sysvena-gates
 
-      - name: Prepare licence exceptions
+      - name: Read the PR
+        id: pr
+        if: ${{ !cancelled() && steps.library-move.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/sysvena-gates/lib/gh-retry.sh"
+          # One line of compact JSON: jq escapes any newline inside the title.
+          snapshot=$(gh_read "repos/$REPO/pulls/$PR" --jq '{title: .title, labels: [.labels[].name], body: (.body // "")}' | jq -c .)
+          echo "PR snapshot: $snapshot"
+          echo "pr=$snapshot" >> "$GITHUB_OUTPUT"
+
+      - name: PR title
+        id: title
+        if: ${{ !cancelled() && steps.pr.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          PR_SNAPSHOT: ${{ steps.pr.outputs.pr }}
+        run: |
+          set -euo pipefail
+          TITLE=$(jq -r '.title' <<< "$PR_SNAPSHOT")
+          if [[ "$TITLE" == *$'\n'* || "$TITLE" == *$'\r'* ]]; then
+            echo "::error::PR title must be one line."
+            exit 1
+          fi
+          pattern='^(feat|fix|chore|docs|style|refactor|test|perf|ci|build|revert)(\([a-z0-9][a-z0-9._-]*\))?!?: [^ ].*$'
+          if ! printf '%s' "$TITLE" | grep -Eq "$pattern"; then
+            echo "::error::PR title must be '<type>(<area>): <summary>' with type feat, fix, chore, docs, style, refactor, test, perf, ci, build or revert (the types of @commitlint/config-conventional). Got: $TITLE"
+            exit 1
+          fi
+          if [ "${#TITLE}" -gt 72 ]; then
+            echo "::error::PR title is ${#TITLE} characters; keep it at 72 or fewer."
+            exit 1
+          fi
+          echo "PR title OK: $TITLE"
+
+      # PR description: every PR ends with the self-check of project rules §3 and
+      # CODE_REVIEW.md: a "Sources/tests:" part, then a "Quality:" part, each with
+      # content. The label may be bold (**Sources/tests:**) or a heading
+      # (## Sources/tests:). Release PRs (`changeset-release/*`, written by the
+      # Changesets action) and Dependabot PRs are exempt: no agent writes them.
+      # Editing the description alone starts no run (see the header); re-run the
+      # Gates job after the edit.
+      - name: PR description
+        id: description
+        if: ${{ !cancelled() && steps.pr.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          PR_SNAPSHOT: ${{ steps.pr.outputs.pr }}
+          HEAD_REF: ${{ github.head_ref }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_REF" == changeset-release/* ]]; then
+            echo "Release PR ($HEAD_REF): no self-check needed."
+            exit 0
+          fi
+          if [ "$AUTHOR" = 'dependabot[bot]' ]; then
+            echo "Dependabot PR: no self-check needed."
+            exit 0
+          fi
+          # HTML comments (the PR template's hints) are not content.
+          jq -r '.body | gsub("(?s)<!--.*?-->"; "")' <<< "$PR_SNAPSHOT" | tr -d '\r' > body.txt
+          # Prints "<sources line> <quality line> <sources content> <quality content>"
+          # (line numbers of the first label of each kind, 0 when absent; content
+          # = 1 when non-blank text follows the label before the next label, the
+          # next heading, the "🤖 Generated with" attribution line or the end).
+          read -r s q sc qc < <(awk '
+            function label(name) { return $0 ~ "^(#+[ \t]+)?(\\*\\*)?" name ":(\\*\\*)?([ \t]|$)" }
+            {
+              rest = $0
+              if ($0 ~ /^(#|🤖)/ && !label("Sources/tests") && !label("Quality")) { part = ""; next }
+              if (label("Sources/tests") && !s) { s = NR; part = "s"; sub(/^.*Sources\/tests:(\*\*)?/, "", rest) }
+              else if (label("Quality") && !q) { q = NR; part = "q"; sub(/^.*Quality:(\*\*)?/, "", rest) }
+              if (rest ~ /[^ \t]/) { if (part == "s") sc = 1; else if (part == "q") qc = 1 }
+            }
+            END { print s + 0, q + 0, sc + 0, qc + 0 }' body.txt)
+          if [ "$s" = 0 ] || [ "$q" = 0 ]; then
+            echo "::error::The PR description must end with the self-check of project rules §3: a 'Sources/tests:' part, then a 'Quality:' part (bold or as headings)."
+            exit 1
+          fi
+          if [ "$s" -gt "$q" ]; then
+            echo "::error::In the PR description 'Sources/tests:' must come before 'Quality:'."
+            exit 1
+          fi
+          if [ "$sc" = 0 ] || [ "$qc" = 0 ]; then
+            echo "::error::'Sources/tests:' and 'Quality:' in the PR description each need content (for Quality, 'None.' when there is no gap)."
+            exit 1
+          fi
+          echo "PR description has the self-check (Sources/tests: line $s, Quality: line $q)."
+
+      - name: Regression test
+        id: changes
+        if: ${{ !cancelled() && steps.pr.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_SNAPSHOT: ${{ steps.pr.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/sysvena-gates/lib/gh-retry.sh"
+          jq -r '.title' <<< "$PR_SNAPSHOT" > title.txt
+          jq -r '.labels[]' <<< "$PR_SNAPSHOT" > labels.txt
+          gh_read --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename' > changed.txt
+          echo "Changed files:"; sed 's/^/  /' changed.txt
+
+          # Regression test: a bug fix (title type `fix` or label `bug`) changes a test,
+          # unless the maintainer waived it. A test is a file under __tests__/,
+          # __integration__/ or tests/, or a *.test.* / *.spec.* JS or TS file.
+          reason=""
+          if grep -Eq '^fix(\([a-z0-9][a-z0-9._-]*\))?!?: ' title.txt; then
+            reason="title type 'fix'"
+          elif grep -qx 'bug' labels.txt; then
+            reason="label 'bug'"
+          fi
+          if [ -z "$reason" ]; then
+            echo "Not a bug fix: no regression test needed."
+          elif grep -qx 'skip-regression-test' labels.txt; then
+            echo "Bug fix ($reason): regression test waived by the maintainer (skip-regression-test)."
+          elif grep -Eq '(^|/)(__tests__|__integration__|tests)/|\.(test|spec)\.[cm]?[jt]sx?$' changed.txt; then
+            echo "Bug fix ($reason): regression test present."
+          else
+            echo "::error::A bug fix ($reason) must add or change a test that fails without the fix. Only the maintainer may waive this with 'skip-regression-test'."
+            exit 1
+          fi
+
+      # Dependency review: a PR must not add a dependency with a known
+      # vulnerability or with a licence outside the policy. GitHub's documented way
+      # to enforce dependency review across an organization is a ruleset that
+      # requires a workflow running actions/dependency-review-action; this is it.
+      # The action compares the base and head commits through the dependency
+      # review REST API, so the job needs only `contents: read` and never checks
+      # out the PR: its one checkout is the gates library at the gates commit.
+      #
+      # Policy (sysvena/mercato-platform#15, decided 2026-11-15):
+      #   - Vulnerabilities of every severity (`low` and up) in every scope
+      #     (runtime, development, unknown): development dependencies run in CI
+      #     and on developer machines too (OWASP CICD-SEC-3).
+      #   - Licences: an allow list (the action's maintainers deprecate deny lists,
+      #     actions/dependency-review-action#938). ALLOW_LICENSES holds the
+      #     licences that both Google's classification (notice or unencumbered)
+      #     and the Blue Oak Council list (Bronze or better) rate permissive, plus
+      #     CC-BY-4.0 for data. Everything else, including weak copyleft (MPL, EPL,
+      #     LGPL), JSON and WTFPL, needs a reviewed exception.
+      #   - A dependency with no detected licence fails. The action only reports it
+      #     (actions/dependency-review-action#672; PR #1170 adds an option), so the
+      #     step "Check unknown and excepted licences" fails it.
+      #   - Exceptions live only here, so a PR cannot loosen its own check, and a
+      #     change reaches the repositories through the gate release steps.
+      #     LICENSE_EXCEPTIONS is a JSON array of {purl, license, reason}:
+      #       purl    package URL without a version, e.g. "pkg:npm/elkjs",
+      #               written as the dependency graph writes it ("%40" for "@")
+      #       license the licence the dependency graph reports for it, as an SPDX
+      #               expression, or NOASSERTION when it reports none
+      #       reason  who reviewed it, when, and why it is acceptable
+      #     An exception covers every version of the package, but the check fails
+      #     when an added version reports a licence other than the approved one,
+      #     unless every licence in what it reports is on ALLOW_LICENSES (then the
+      #     version needs no exception; the check prints a notice, so an exception
+      #     that no version needs any more is seen and removed).
+      #     A licence the dependency graph misdetects (ClearlyDefined data with a
+      #     licence the package does not carry) is excepted the same way, with
+      #     the licence text the package actually ships in the reason.
+      #   - A vulnerability that cannot be fixed yet goes into ALLOW_GHSAS below,
+      #     with the review behind it, through a PR.
+      - name: 'Dependency review: licence exceptions'
         id: exceptions
+        if: ${{ !cancelled() && steps.library-move.outcome == 'success' }}
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           valid='type == "array" and all(.[];
@@ -629,8 +405,10 @@ jobs:
           jq -r '.[] | "  \(.purl): \(.license) (\(.reason))"' <<< "$LICENSE_EXCEPTIONS"
           echo "purls=$(jq -r 'map(.purl) | join(", ")' <<< "$LICENSE_EXCEPTIONS")" >> "$GITHUB_OUTPUT"
 
-      - name: Review dependency changes
+      - name: Dependency review
         id: review
+        if: ${{ !cancelled() && steps.exceptions.outcome == 'success' }}
+        timeout-minutes: 10
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: low
@@ -639,8 +417,10 @@ jobs:
           allow-dependencies-licenses: ${{ steps.exceptions.outputs.purls }}
           allow-ghsas: ${{ env.ALLOW_GHSAS }}
 
-      - name: Check unknown and excepted licences
+      - name: 'Dependency review: unknown and excepted licences'
+        id: licences
         if: ${{ !cancelled() && steps.exceptions.outcome == 'success' }}
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -712,68 +492,49 @@ jobs:
           fi
           exit "$failed"
 
-  # Workflow lockfile: a repository with workflows keeps
-  # `.github/workflows/actions.lock`, generated by `gh actions-lock`
-  # (github/gh-actions-lock), which pins every action the workflows use,
-  # including transitive dependencies, to a commit plus the owner and
-  # repository IDs; the runner then runs the locked versions. This job is the
-  # PR check the extension's docs recommend (`--verify`), and it also stands in
-  # for the "Require lockfile" policy, which needs GitHub Enterprise: without
-  # it the runner ignores a missing or unreadable lockfile
-  # (github/gh-actions-lock#125). The policy lives here, so a PR cannot loosen
-  # its own check.
-  #
-  # Policy (sysvena/mercato-platform#15, decided 2026-11-15, tested on
-  # gates-canary):
-  #   - Workflows present => the lockfile must exist and verify.
-  #   - Every action a workflow uses directly is pinned to a commit SHA.
-  #   - Lock with `--no-narrow`, keeping `uses: …@<sha> # vX.Y.Z`: with SHA
-  #     refs the runner refuses a locked commit that differs from the pin
-  #     (with tag refs it ran any locked commit), tag refs let Dependabot
-  #     propose an unmerged branch named like a version
-  #     (github/gh-actions-lock#273), and Dependabot relocks with `--no-narrow`.
-  #   - The job fails on a non-zero exit (every `error`, including a GitHub
-  #     API that did not answer, `reachability-unknown`) and on every other
-  #     finding (`warning`, `info`) except `sha-as-ref`, which `--no-narrow`
-  #     reports for every SHA pin by design.
-  #
-  # The extension's binary runs on its own (as Dependabot runs it), pinned by
-  # version and SHA-256. To update it: download the linux-amd64 asset of the
-  # release, `gh attestation verify <file> --repo github/gh-actions-lock`, and
-  # compare its SHA-256 with the one dependabot-core pins
-  # (github_actions/Dockerfile).
-  workflow-lockfile:
-    name: Workflow lockfile
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      GH_ACTIONS_LOCK_VERSION: v0.4.1
-      GH_ACTIONS_LOCK_SHA256: 39deb2fe714dbf74b073d8245fc7f3d50cd0eee18d5c0900e9e849ae933ae17e
-    steps:
-      # The gates' own shell library (see Detect checks).
-      - name: Gates library
+      # Workflow lockfile: a repository with workflows keeps
+      # `.github/workflows/actions.lock`, generated by `gh actions-lock`
+      # (github/gh-actions-lock), which pins every action the workflows use,
+      # including transitive dependencies, to a commit plus the owner and
+      # repository IDs; the runner then runs the locked versions. This gate is the
+      # PR check the extension's docs recommend (`--verify`), and it also stands in
+      # for the "Require lockfile" policy, which needs GitHub Enterprise: without
+      # it the runner ignores a missing or unreadable lockfile
+      # (github/gh-actions-lock#125). The policy lives here, so a PR cannot loosen
+      # its own check.
+      #
+      # Policy (sysvena/mercato-platform#15, decided 2026-11-15, tested on
+      # gates-canary):
+      #   - Workflows present => the lockfile must exist and verify.
+      #   - Every action a workflow uses directly is pinned to a commit SHA.
+      #   - Lock with `--no-narrow`, keeping `uses: …@<sha> # vX.Y.Z`: with SHA
+      #     refs the runner refuses a locked commit that differs from the pin
+      #     (with tag refs it ran any locked commit), tag refs let Dependabot
+      #     propose an unmerged branch named like a version
+      #     (github/gh-actions-lock#273), and Dependabot relocks with `--no-narrow`.
+      #   - The gate fails on a non-zero exit (every `error`, including a GitHub
+      #     API that did not answer, `reachability-unknown`) and on every other
+      #     finding (`warning`, `info`) except `sha-as-ref`, which `--no-narrow`
+      #     reports for every SHA pin by design.
+      #
+      # The extension's binary runs on its own (as Dependabot runs it), pinned by
+      # version and SHA-256. To update it: download the linux-amd64 asset of the
+      # release, `gh attestation verify <file> --repo github/gh-actions-lock`, and
+      # compare its SHA-256 with the one dependabot-core pins
+      # (github_actions/Dockerfile).
+      # Its own checkout of the PR, after the steps above: they write their
+      # scratch files into the workspace.
+      - name: 'Workflow lockfile: check out the PR'
+        id: checkout
+        if: ${{ !cancelled() }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: sysvena/.github
-          ref: ${{ github.workflow_sha }}
-          path: .sysvena-gates
-          sparse-checkout: scripts/lib
           persist-credentials: false
 
-      - name: Move the gates library out of the workspace
-        run: |
-          mkdir -p "$RUNNER_TEMP/sysvena-gates"
-          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
-          rm -rf .sysvena-gates
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Find workflows
+      - name: 'Workflow lockfile: find workflows'
         id: find
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           # GitHub runs only the YAML files directly in .github/workflows.
@@ -789,8 +550,10 @@ jobs:
             echo "workflows=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install gh-actions-lock
-        if: steps.find.outputs.workflows == 'true'
+      - name: 'Workflow lockfile: install gh-actions-lock'
+        id: lf-install
+        if: ${{ !cancelled() && steps.find.outputs.workflows == 'true' && steps.library-move.outcome == 'success' }}
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           LOCK_BIN: ${{ runner.temp }}/gh-actions-lock
@@ -810,8 +573,10 @@ jobs:
           chmod +x "$LOCK_BIN"
           echo "gh-actions-lock $GH_ACTIONS_LOCK_VERSION installed, SHA-256 verified."
 
-      - name: Verify the lockfile
-        if: steps.find.outputs.workflows == 'true'
+      - name: Workflow lockfile
+        id: lockfile
+        if: ${{ !cancelled() && steps.lf-install.outcome == 'success' }}
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           LOCK_BIN: ${{ runner.temp }}/gh-actions-lock
@@ -851,3 +616,221 @@ jobs:
             exit 1
           fi
           echo "Workflow lockfile OK ($(jq '.findings | length' verify.json) sha-as-ref warning(s), expected with SHA pins)."
+
+      # One line per gate: ✅ passed, ❌ failed, ➖ did not apply. GATES lists
+      # each gate as `<gate>=<steps it needs>;<its own steps>` (step ids): it
+      # failed when any of them failed, passed when one of its own steps
+      # succeeded, and did not apply otherwise.
+      - name: Summary
+        if: ${{ always() }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          GATES: |
+            PR title=library,library-move,pr;title
+            PR description=library,library-move,pr;description
+            Regression test=library,library-move,pr;changes
+            Dependency review=library,library-move;exceptions,review,licences
+            Workflow lockfile=library,library-move;checkout,find,lf-install,lockfile
+        run: |
+          set -euo pipefail
+          {
+            echo "| Gate | Result |"
+            echo "|---|---|"
+            while IFS='=' read -r gate ids; do
+              [ -n "$gate" ] || continue
+              result=$(jq -r --arg needs "${ids%%;*}" --arg own "${ids#*;}" '
+                def outcomes($ids): . as $s | [$ids | split(",")[] | select(. != "") | $s[.].outcome // "skipped"];
+                if any((outcomes($needs) + outcomes($own))[]; . == "failure" or . == "cancelled") then "❌ failed"
+                elif any(outcomes($own)[]; . == "success") then "✅ passed"
+                else "➖ did not apply" end' <<< "$STEPS")
+              echo "| $gate | $result |"
+            done <<< "$GATES"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # The gates that run code from the PR (see the header): Changeset, Lessons
+  # and Agent rules share one checkout and one install.
+  repo-checks:
+    name: Repo checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      # The gates' own shell library (scripts/lib) at the commit these gates
+      # run from (see "Gates version" in the Gates job). actions/checkout retries a failed
+      # fetch. The library moves to $RUNNER_TEMP, so the workspace holds only
+      # the repository under check.
+      - name: Gates library
+        id: library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sysvena/.github
+          ref: ${{ github.workflow_sha }}
+          path: .sysvena-gates
+          sparse-checkout: scripts/lib
+          persist-credentials: false
+
+      - name: Move the gates library out of the workspace
+        id: library-move
+        run: |
+          mkdir -p "$RUNNER_TEMP/sysvena-gates"
+          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
+          rm -rf .sysvena-gates
+
+      # Full history: the changeset check compares with the base commit.
+      - name: Check out the PR
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect
+        id: detect
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: |
+          flag() { if eval "$1"; then echo true; else echo false; fi; }
+          {
+            echo "agent-rules=$(flag '[ -f package.json ] && grep -q "\"@sysvena/agent-rules\"" package.json')"
+            echo "lessons=$(flag '[ -f scripts/check-lessons.mjs ]')"
+            echo "nvmrc=$(flag '[ -f .nvmrc ]')"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      # Changeset: the check Changesets documents for requiring changesets
+      # ("Automating Changesets", blocking: `changeset status --since <base>`). It
+      # fails when a package that Changesets versions changed and the PR adds no
+      # changeset; a change that releases nothing adds `yarn changeset --empty`.
+      # What counts as a change and which packages are versioned (private packages
+      # only with `privatePackages.version`) comes from `.changeset/config.json`
+      # of the BASE commit, so a PR cannot loosen its own check; a change to it
+      # applies from the next PR. The CLI is the repository's own, installed from
+      # its lockfile. The release PR (`changeset-release/*`) consumes changesets
+      # and is exempt, as in the Changesets docs.
+      #
+      # Before anything from the PR runs: git only, on the base commit.
+      - name: 'Changeset: prepare'
+        id: prepare
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          # The checkout is the PR's merge commit; its first parent is the base.
+          base=$(git rev-parse HEAD^1)
+          echo "Base commit: $base"
+          run=false
+          if [[ "$HEAD_REF" == changeset-release/* ]]; then
+            echo "Release PR: no changeset needed."
+          elif ! git cat-file -e "$base:.changeset/config.json" 2> /dev/null; then
+            if [ -f .changeset/config.json ]; then
+              echo "This PR adds Changesets: the changeset check applies from the next PR."
+            else
+              echo "No .changeset/config.json: changesets are not used in this repository."
+            fi
+          else
+            mkdir -p .changeset
+            git show "$base:.changeset/config.json" > .changeset/config.json
+            if git diff --quiet HEAD -- .changeset/config.json; then
+              echo "Using .changeset/config.json (unchanged by this PR)."
+            else
+              echo "Using .changeset/config.json of the base commit; this PR's change to it applies from the next PR."
+            fi
+            run=true
+          fi
+          { echo "run=$run"; echo "base=$base"; } >> "$GITHUB_OUTPUT"
+
+      - name: Nothing to check
+        if: ${{ !cancelled() && steps.detect.outcome == 'success' && steps.prepare.outcome == 'success' && steps.prepare.outputs.run != 'true' && steps.detect.outputs.agent-rules != 'true' && steps.detect.outputs.lessons != 'true' }}
+        run: echo "No changesets, lessons or agent rules to check in this repository."
+
+      - name: Set up Node
+        id: node
+        if: ${{ !cancelled() && (steps.prepare.outputs.run == 'true' || steps.detect.outputs.agent-rules == 'true' || steps.detect.outputs.lessons == 'true') }}
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        # Exactly one of the two inputs is non-empty: setup-node prefers
+        # node-version when both are set, and `cond && '' || x` is always x.
+        with:
+          node-version-file: ${{ steps.detect.outputs.nvmrc == 'true' && '.nvmrc' || '' }}
+          node-version: ${{ steps.detect.outputs.nvmrc != 'true' && '24' || '' }}
+
+      - name: Node version
+        if: ${{ !cancelled() && steps.node.outcome == 'success' }}
+        run: echo "Node $(node --version)"
+
+      - name: Lessons
+        id: lessons
+        if: ${{ !cancelled() && steps.node.outcome == 'success' && steps.detect.outputs.lessons == 'true' }}
+        timeout-minutes: 5
+        run: node scripts/check-lessons.mjs
+
+      - name: Install dependencies
+        id: install
+        if: ${{ !cancelled() && steps.node.outcome == 'success' && steps.library-move.outcome == 'success' && (steps.prepare.outputs.run == 'true' || steps.detect.outputs.agent-rules == 'true') }}
+        timeout-minutes: 15
+        env:
+          NPM_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/sysvena-gates/lib/retry-download.sh"
+          corepack enable
+          # Fetch the Yarn release in packageManager first, with retries:
+          # Corepack itself fetches once (scripts/lib/retry-download.sh).
+          retry_download corepack install
+          # GitHub Packages token for @sysvena/*, in the user configuration
+          # (~/.yarnrc.yml), where `yarn npm login` keeps it. A repository
+          # without a token in its .yarnrc.yml (the layout Dependabot needs,
+          # dependabot-core#16910) reads it from here; NPM_AUTH_TOKEN above
+          # stays for repositories whose .yarnrc.yml still reads the token
+          # from it: a project setting overrides the user one.
+          yarn config set --home npmScopes.sysvena.npmAuthToken "$NPM_AUTH_TOKEN" > /dev/null
+          yarn install --immutable
+
+      - name: Changeset
+        id: changeset
+        if: ${{ !cancelled() && steps.prepare.outputs.run == 'true' && steps.install.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          BASE: ${{ steps.prepare.outputs.base }}
+        run: |
+          if yarn changeset status --since "$BASE"; then
+            echo "Changeset check OK."
+          else
+            echo "::error::A package that Changesets versions changed, but this PR adds no changeset. Run \`yarn changeset\` and commit the file, or \`yarn changeset --empty\` if the change releases nothing."
+            exit 1
+          fi
+
+      - name: Agent rules
+        id: agent-rules
+        if: ${{ !cancelled() && steps.detect.outputs.agent-rules == 'true' && steps.install.outcome == 'success' }}
+        timeout-minutes: 5
+        run: yarn sysvena-agent-rules check
+
+      # One line per gate: ✅ passed, ❌ failed, ➖ did not apply. GATES lists
+      # each gate as `<gate>=<steps it needs>;<its own steps>` (step ids): it
+      # failed when any of them failed, passed when one of its own steps
+      # succeeded, and did not apply otherwise.
+      - name: Summary
+        if: ${{ always() }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          GATES: |
+            Changeset=library,library-move,checkout,node,install;prepare,changeset
+            Lessons=checkout,node;lessons
+            Agent rules=library,library-move,checkout,detect,node,install;agent-rules
+        run: |
+          set -euo pipefail
+          {
+            echo "| Gate | Result |"
+            echo "|---|---|"
+            while IFS='=' read -r gate ids; do
+              [ -n "$gate" ] || continue
+              result=$(jq -r --arg needs "${ids%%;*}" --arg own "${ids#*;}" '
+                def outcomes($ids): . as $s | [$ids | split(",")[] | select(. != "") | $s[.].outcome // "skipped"];
+                if any((outcomes($needs) + outcomes($own))[]; . == "failure" or . == "cancelled") then "❌ failed"
+                elif any(outcomes($own)[]; . == "success") then "✅ passed"
+                else "➖ did not apply" end' <<< "$STEPS")
+              echo "| $gate | $result |"
+            done <<< "$GATES"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
