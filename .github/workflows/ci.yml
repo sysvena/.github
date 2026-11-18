@@ -61,6 +61,9 @@ jobs:
       - name: Test the retry of GitHub reads in the scripts
         run: tests/scripts/gh-retry.sh
 
+      - name: Test the retry of downloads in the gates
+        run: tests/scripts/retry-download.sh
+
       - name: Run the gate tests
         run: tests/gates/run.sh
 

@@ -16,6 +16,13 @@ stub="$root/tests/gates/stub"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# The steps source the gates library from $RUNNER_TEMP, where the workflow's
+# "Gates library" steps put scripts/lib; here it is this checkout's copy.
+# GH_READ_DELAY=0: a retry in a test does not wait.
+mkdir -p "$tmp/runner/sysvena-gates"
+cp -R "$root/scripts/lib" "$tmp/runner/sysvena-gates/lib"
+export RUNNER_TEMP="$tmp/runner" GH_READ_DELAY=0
+
 passed=0
 failed=0
 
@@ -38,6 +45,8 @@ extract dependency-review "Check unknown and excepted licences" "$tmp/dr-check.s
 extract workflow-lockfile "Find workflows" "$tmp/lf-find.sh"
 extract workflow-lockfile "Install gh-actions-lock" "$tmp/lf-install.sh"
 extract workflow-lockfile "Verify the lockfile" "$tmp/lf-verify.sh"
+extract changeset "Install dependencies" "$tmp/cs-install.sh"
+extract repo-checks "Install dependencies" "$tmp/rc-install.sh"
 
 report() { # <ok> <name> <detail>
   if [ "$1" = true ]; then
@@ -490,7 +499,10 @@ policy_case "only the policy inputs are set" "$review | .with | keys | join(\",\
 policy_case "allow list as decided" "$dr.env.ALLOW_LICENSES" \
   "MIT, MIT-0, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD, BlueOak-1.0.0, Zlib, Python-2.0, AFL-2.1, AFL-3.0, CC0-1.0, Unlicense, CC-BY-4.0"
 policy_case "read-only token" "$dr.permissions | to_entries | map(.key + \"=\" + .value) | join(\",\")" "contents=read"
-policy_case "no checkout (a PR cannot change the policy)" "[$dr.steps[] | select(.uses // \"\" | test(\"checkout\"))] | length" "0"
+policy_case "no checkout of the PR (a PR cannot change the policy)" \
+  "[$dr.steps[] | select(.uses // \"\" | test(\"checkout\")) | select(.with.repository != \"sysvena/.github\" or .with.ref != \"\${{ github.workflow_sha }}\")] | length" "0"
+policy_case "the only checkout is the gates library" \
+  "[$dr.steps[] | select(.uses // \"\" | test(\"checkout\")) | .name] | join(\",\")" "Gates library"
 
 echo "# Dependency review: licence exceptions"
 dr_prepare_case "the exceptions in the workflow are valid" pass \
@@ -665,6 +677,49 @@ desc_case "a hint in an HTML comment is not content" fail "**Sources/tests:** <!
 desc_case "a release PR is exempt" pass "" head=changeset-release/main message="Release PR"
 desc_case "a Dependabot PR is exempt" pass "Bumps x." author='dependabot[bot]' message="Dependabot PR"
 desc_case "a branch merely containing changeset-release is not exempt" fail "" head=feature/changeset-release/x
+
+# install_case <name> <step script> <corepack failures>
+# Runs an "Install dependencies" step with stub `corepack` (failing
+# `corepack install` the given number of times) and stub `yarn`.
+install_case() {
+  local name=$1 script=$2 fails=$3
+  local work="$tmp/work" bin="$tmp/bin"
+  rm -rf "$work" "$bin"
+  mkdir -p "$work" "$bin"
+  # shellcheck disable=SC2016 # the stubs' own variables, not expanded here
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "corepack $*" >> "$WORK/calls"' \
+    'if [ "$1" = install ] && [ "$(grep -c "^corepack install" "$WORK/calls")" -le "$FAILS" ]; then' \
+    '  echo "TypeError: terminated (read ECONNRESET)" >&2; exit 1; fi' > "$bin/corepack"
+  # shellcheck disable=SC2016
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "yarn $*" >> "$WORK/calls"' > "$bin/yarn"
+  chmod +x "$bin/corepack" "$bin/yarn"
+  local got=pass
+  (cd "$work" && WORK="$work" FAILS="$fails" PATH="$bin:$PATH" bash -e "$script" > "$work/log" 2>&1) || got=fail
+  local calls want ok=true detail=""
+  calls=$(tr '\n' ';' < "$work/calls")
+  if [ "$fails" -le 3 ]; then
+    want="corepack enable;$(printf 'corepack install;%.0s' $(seq 0 "$fails"))yarn install --immutable;"
+    [ "$got" = pass ] || { ok=false; detail+="got $got, want pass"$'\n'"$(cat "$work/log")"$'\n'; }
+  else
+    want="corepack enable;corepack install;corepack install;corepack install;corepack install;"
+    [ "$got" = fail ] || { ok=false; detail+="got $got, want fail"$'\n'; }
+  fi
+  [ "$calls" = "$want" ] || { ok=false; detail+="calls: $calls"$'\n'"want:  $want"$'\n'; }
+  report "$ok" "$name" "$detail"
+}
+
+echo "# Transient errors"
+export FAIL_ONCE=1
+pr_case "an HTTP 502 reading the PR and its files is retried" pass pass "fix: x" "" "tests/a.test.ts modified"
+dr_check_case "an HTTP 502 from the compare API is retried" pass failure "$none" "$ex_elk" \
+  "[$(add pkg:npm/elkjs@0.9.3 '"EPL-2.0"')]" "gh_read: HTTP 502" yes
+lf_install_case "a broken download of gh-actions-lock is retried" pass binary "$good_sha" "" "retry 1 of 3"
+unset FAIL_ONCE
+for job in cs rc; do
+  install_case "$job: a broken Yarn download by Corepack is retried" "$tmp/$job-install.sh" 1
+  install_case "$job: Yarn installs when Corepack works at once" "$tmp/$job-install.sh" 0
+  install_case "$job: a lasting Corepack failure stops before yarn install" "$tmp/$job-install.sh" 4
+done
 
 echo
 echo "$passed passed, $failed failed"

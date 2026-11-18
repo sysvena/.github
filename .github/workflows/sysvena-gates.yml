@@ -50,6 +50,29 @@ jobs:
         run: |
           echo "sysvena gates version: $WORKFLOW_SHA ($WORKFLOW_REF)"
 
+      # The gates' own shell library (scripts/lib) at the commit these gates
+      # run from. The org ruleset runs this file as a workflow of its own (not
+      # a reusable one), so github.workflow_sha is that sysvena/.github commit,
+      # as "Gates version" prints and tests/e2e checks. (GitHub's documented
+      # job.workflow_repository / job.workflow_sha name it for reusable
+      # workflows too, but actionlint 1.7.12 rejects them: rhysd/actionlint#707.)
+      # actions/checkout retries a failed fetch. The library moves to
+      # $RUNNER_TEMP, so the workspace holds only the repository under check.
+      - name: Gates library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sysvena/.github
+          ref: ${{ github.workflow_sha }}
+          path: .sysvena-gates
+          sparse-checkout: scripts/lib
+          persist-credentials: false
+
+      - name: Move the gates library out of the workspace
+        run: |
+          mkdir -p "$RUNNER_TEMP/sysvena-gates"
+          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
+          rm -rf .sysvena-gates
+
       - name: Read the PR
         id: pr
         env:
@@ -58,8 +81,10 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/sysvena-gates/lib/gh-retry.sh"
           # One line of compact JSON: jq escapes any newline inside the title.
-          snapshot=$(gh api "repos/$REPO/pulls/$PR" --jq '{title: .title, labels: [.labels[].name], body: (.body // "")}' | jq -c .)
+          snapshot=$(gh_read "repos/$REPO/pulls/$PR" --jq '{title: .title, labels: [.labels[].name], body: (.body // "")}' | jq -c .)
           echo "PR snapshot: $snapshot"
           echo "pr=$snapshot" >> "$GITHUB_OUTPUT"
 
@@ -168,6 +193,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # The gates' own shell library (see Detect checks).
+      - name: Gates library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sysvena/.github
+          ref: ${{ github.workflow_sha }}
+          path: .sysvena-gates
+          sparse-checkout: scripts/lib
+          persist-credentials: false
+
+      - name: Move the gates library out of the workspace
+        run: |
+          mkdir -p "$RUNNER_TEMP/sysvena-gates"
+          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
+          rm -rf .sysvena-gates
+
       - name: Check changed files
         env:
           GH_TOKEN: ${{ github.token }}
@@ -176,9 +217,11 @@ jobs:
           PR_SNAPSHOT: ${{ needs.detect.outputs.pr }}
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/sysvena-gates/lib/gh-retry.sh"
           jq -r '.title' <<< "$PR_SNAPSHOT" > title.txt
           jq -r '.labels[]' <<< "$PR_SNAPSHOT" > labels.txt
-          gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename' > changed.txt
+          gh_read --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename' > changed.txt
           echo "Changed files:"; sed 's/^/  /' changed.txt
 
           # Regression test: a bug fix (title type `fix` or label `bug`) changes a test,
@@ -220,6 +263,22 @@ jobs:
       contents: read
       packages: read
     steps:
+      # The gates' own shell library (see Detect checks).
+      - name: Gates library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sysvena/.github
+          ref: ${{ github.workflow_sha }}
+          path: .sysvena-gates
+          sparse-checkout: scripts/lib
+          persist-credentials: false
+
+      - name: Move the gates library out of the workspace
+        run: |
+          mkdir -p "$RUNNER_TEMP/sysvena-gates"
+          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
+          rm -rf .sysvena-gates
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -267,7 +326,13 @@ jobs:
         env:
           NPM_AUTH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/sysvena-gates/lib/retry-download.sh"
           corepack enable
+          # Fetch the Yarn release in packageManager first, with retries:
+          # Corepack itself fetches once (scripts/lib/retry-download.sh).
+          retry_download corepack install
           yarn install --immutable
 
       - name: Check for a changeset
@@ -295,6 +360,24 @@ jobs:
         if: needs.detect.outputs.agent-rules != 'true' && needs.detect.outputs.lessons != 'true'
         run: echo "No lessons or agent rules in this repository."
 
+      # The gates' own shell library (see Detect checks).
+      - name: Gates library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.detect.outputs.agent-rules == 'true'
+        with:
+          repository: sysvena/.github
+          ref: ${{ github.workflow_sha }}
+          path: .sysvena-gates
+          sparse-checkout: scripts/lib
+          persist-credentials: false
+
+      - name: Move the gates library out of the workspace
+        if: needs.detect.outputs.agent-rules == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/sysvena-gates"
+          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
+          rm -rf .sysvena-gates
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.detect.outputs.agent-rules == 'true' || needs.detect.outputs.lessons == 'true'
         with:
@@ -321,7 +404,13 @@ jobs:
         env:
           NPM_AUTH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/sysvena-gates/lib/retry-download.sh"
           corepack enable
+          # Fetch the Yarn release in packageManager first, with retries:
+          # Corepack itself fetches once (scripts/lib/retry-download.sh).
+          retry_download corepack install
           yarn install --immutable
 
       - name: sysvena-agent-rules check
@@ -333,7 +422,8 @@ jobs:
   # to enforce dependency review across an organization is a ruleset that
   # requires a workflow running actions/dependency-review-action; this is it.
   # The action compares the base and head commits through the dependency
-  # review REST API, so the job needs no checkout and only `contents: read`.
+  # review REST API, so the job needs only `contents: read` and never checks
+  # out the PR: its one checkout is the gates library at the gates commit.
   #
   # Policy (sysvena/mercato-platform#15, decided 2026-11-15):
   #   - Vulnerabilities of every severity (`low` and up) in every scope
@@ -487,6 +577,22 @@ jobs:
            "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."}
         ]
     steps:
+      # The gates' own shell library (see Detect checks).
+      - name: Gates library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sysvena/.github
+          ref: ${{ github.workflow_sha }}
+          path: .sysvena-gates
+          sparse-checkout: scripts/lib
+          persist-credentials: false
+
+      - name: Move the gates library out of the workspace
+        run: |
+          mkdir -p "$RUNNER_TEMP/sysvena-gates"
+          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
+          rm -rf .sysvena-gates
+
       - name: Prepare licence exceptions
         id: exceptions
         run: |
@@ -525,6 +631,8 @@ jobs:
           INVALID_LICENSES: ${{ steps.review.outputs.invalid-license-changes }}
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/sysvena-gates/lib/gh-retry.sh"
           failed=0
 
           # Unknown licences: the action lists them under `unlicensed` (after it
@@ -555,7 +663,7 @@ jobs:
           # case-insensitively; AND/and and OR/or are operators). WITH, NOASSERTION, LicenseRef-* and
           # anything else not on the list never count as allowed.
           if [ "$(jq length <<< "$LICENSE_EXCEPTIONS")" -gt 0 ]; then
-            gh api --paginate "repos/$REPO/dependency-graph/compare/$BASE_SHA...$HEAD_SHA" --jq '.[]' \
+            gh_read --paginate "repos/$REPO/dependency-graph/compare/$BASE_SHA...$HEAD_SHA" --jq '.[]' \
               | jq -s . > dependency-changes.json
             checked=$(jq -c --argjson ex "$LICENSE_EXCEPTIONS" --arg allow "$ALLOW_LICENSES" '
               def base: ascii_downcase | sub("[?#].*$"; "") | sub("@[^/@]*$"; "");
@@ -625,6 +733,22 @@ jobs:
       GH_ACTIONS_LOCK_VERSION: v0.4.1
       GH_ACTIONS_LOCK_SHA256: 39deb2fe714dbf74b073d8245fc7f3d50cd0eee18d5c0900e9e849ae933ae17e
     steps:
+      # The gates' own shell library (see Detect checks).
+      - name: Gates library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sysvena/.github
+          ref: ${{ github.workflow_sha }}
+          path: .sysvena-gates
+          sparse-checkout: scripts/lib
+          persist-credentials: false
+
+      - name: Move the gates library out of the workspace
+        run: |
+          mkdir -p "$RUNNER_TEMP/sysvena-gates"
+          mv .sysvena-gates/scripts/lib "$RUNNER_TEMP/sysvena-gates/lib"
+          rm -rf .sysvena-gates
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -653,11 +777,13 @@ jobs:
           LOCK_BIN: ${{ runner.temp }}/gh-actions-lock
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/sysvena-gates/lib/retry-download.sh"
           if [ "$(uname -s)-$(uname -m)" != "Linux-x86_64" ]; then
             echo "::error::The pinned gh-actions-lock binary is linux-amd64; this runner is $(uname -s)-$(uname -m)."
             exit 1
           fi
-          gh release download "$GH_ACTIONS_LOCK_VERSION" -R github/gh-actions-lock -p linux-amd64 -O "$LOCK_BIN" --clobber
+          retry_download gh release download "$GH_ACTIONS_LOCK_VERSION" -R github/gh-actions-lock -p linux-amd64 -O "$LOCK_BIN" --clobber
           if ! echo "$GH_ACTIONS_LOCK_SHA256  $LOCK_BIN" | sha256sum -c --strict --quiet -; then
             echo "::error::gh-actions-lock $GH_ACTIONS_LOCK_VERSION (linux-amd64) does not have the pinned SHA-256."
             exit 1

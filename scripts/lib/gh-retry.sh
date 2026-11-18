@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # gh_read and gh_write: `gh api` that survives GitHub's transient server
 # errors. Sourced by scripts/gates-promote.sh and tests/e2e/gates-e2e.sh at
-# their start, so a later edit of this file cannot change a running script.
+# their start, so a later edit of this file cannot change a running script,
+# and by the gates workflow (from the commit the gates run from).
 #
 # GitHub's REST docs give no retry rule for 5xx ("try your request later");
 # this follows GitHub's own client, @octokit/plugin-retry 8.1.1: up to 3
