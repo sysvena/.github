@@ -471,7 +471,10 @@ jobs:
       # has no licence data, so it reports none (tested on gates-canary). Each
       # one gets an entry when it is first published; a scope-wide rule would
       # also pass a public package of the same name, as a purl does not say
-      # which registry it came from.
+      # which registry it came from. Own reusable workflows called from
+      # sysvena/.github are reported the same way (the repository has no
+      # licence file yet); each one gets its own entry (a purl names the
+      # owner, but one entry per workflow keeps the list explicit).
       # Advisories that cannot be fixed yet, each with the review behind it.
       #   GHSA-3g3m-2fjr-6pw4 (glob >= 9.0.0, <= 14.0.1, moderate): an aborted
       #     async walk keeps reading directories. Fixed only in glob 14.0.2;
@@ -515,6 +518,8 @@ jobs:
            "reason": "Own proprietary package (sysvena), GitHub Packages; reviewed by the maintainer 2026-11-16."},
           {"purl": "pkg:npm/%40sysvena/module-boundaries", "license": "NOASSERTION",
            "reason": "Own proprietary package (sysvena), GitHub Packages; reviewed by the maintainer 2026-11-16."},
+          {"purl": "pkg:githubactions/sysvena/.github/.github/workflows/dependabot-changeset.yml", "license": "NOASSERTION",
+           "reason": "Own reusable workflow (sysvena/.github, no licence file yet, mercato-platform#18); reviewed by the maintainer 2026-11-18."},
           {"purl": "pkg:npm/axe-core", "license": "MPL-2.0",
            "reason": "Dependency of eslint-plugin-jsx-a11y (eslint-config-next), development only. MPL-2.0 is file-level weak copyleft; used unmodified. Reviewed by the maintainer 2026-11-16."},
           {"purl": "pkg:npm/lightningcss", "license": "MPL-2.0",
