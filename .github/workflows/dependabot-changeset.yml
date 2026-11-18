@@ -1,0 +1,227 @@
+name: Dependabot changeset
+
+# Reusable workflow: adds the changeset a Dependabot PR needs, so the
+# changeset gate of the sysvena gates passes (sysvena/mercato-platform#15,
+# 1.13b). scripts/dependabot-changeset.mjs (this repository) decides what it
+# is: a patch release of a package whose runtime dependencies changed, or of
+# an app that ships its lockfile for any dependency change; an empty
+# changeset when only development dependencies or the lockfile of a library
+# changed; none when no versioned package changed.
+#
+# A repository calls it from its own workflow, pinned by commit SHA (see
+# README, "Dependabot changeset"):
+#
+#   on:
+#     pull_request:
+#   permissions:
+#     contents: read
+#   concurrency:
+#     group: dependabot-changeset-${{ github.event.pull_request.number }}
+#     cancel-in-progress: true
+#   jobs:
+#     changeset:
+#       uses: sysvena/.github/.github/workflows/dependabot-changeset.yml@<sha>
+#       secrets:
+#         app-client-id: ${{ secrets.SYSVENA_DEPENDABOT_APP_CLIENT_ID }}
+#         app-private-key: ${{ secrets.SYSVENA_DEPENDABOT_APP_PRIVATE_KEY }}
+#
+# The script runs from the commit of this file that the caller pinned
+# (job.workflow_repository and job.workflow_sha, GitHub Docs "Contexts":
+# a reusable workflow checking out "its own source code, rather than the
+# caller's repository"), never from the caller's repository.
+#
+# Security (GitHub Security Lab, "Preventing pwn requests"; GitHub Docs,
+# "Automating Dependabot with GitHub Actions"):
+#   - `pull_request`, not `pull_request_target`. The jobs run only when
+#     Dependabot opened the PR, from a branch of this repository, and
+#     Dependabot triggered the run (`github.actor`); a re-run keeps the
+#     privileges of the first run.
+#   - `plan` has no secrets and a read-only token. It installs nothing, so no
+#     code of a dependency runs; it reads files with node, git and yarn.
+#   - `commit` holds the token of the GitHub App `sysvena-dependabot`
+#     (contents: write on the repositories it is installed on; the client ID
+#     and key are Dependabot secrets, the only secrets a Dependabot run gets).
+#     It runs no code of the repository: it checks the plan strictly, writes
+#     the one changeset file and pushes.
+#   - The push uses that token because a push with GITHUB_TOKEN would not run
+#     CI or the gates on the new commit. That push does not run this workflow
+#     again (the actor is the app), so it cannot loop.
+#   - The commit message carries `[dependabot skip]`, so Dependabot keeps
+#     rebasing the PR and may replace the commit; its push runs this workflow
+#     again, which adds the changeset back.
+
+on:
+  workflow_call:
+    secrets:
+      app-client-id:
+        description: Client ID of the GitHub App sysvena-dependabot (Dependabot secret)
+        required: true
+      app-private-key:
+        description: Private key of the GitHub App sysvena-dependabot (Dependabot secret)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan the changeset
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]'
+      && github.actor == 'dependabot[bot]'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The script at the commit of this workflow that the caller pinned. The
+      # workflow commit is checked, so a missing context fails instead of
+      # checking out the default branch. It moves to $RUNNER_TEMP, so the
+      # workspace holds only the repository of the PR.
+      - name: Check the workflow commit
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$WORKFLOW_REPOSITORY" != sysvena/.github ] || [[ ! "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Unexpected workflow source: '$WORKFLOW_REPOSITORY' at '$WORKFLOW_SHA'."
+            exit 1
+          fi
+          echo "dependabot-changeset version: $WORKFLOW_SHA"
+
+      - name: Changeset script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .sysvena-dependabot-changeset
+          sparse-checkout: scripts/dependabot-changeset.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Move the script out of the workspace
+        run: |
+          mkdir -p "$RUNNER_TEMP/sysvena"
+          mv .sysvena-dependabot-changeset/scripts/dependabot-changeset.mjs "$RUNNER_TEMP/sysvena/"
+          rm -rf .sysvena-dependabot-changeset
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Plan
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          corepack enable
+          plan=$(node "$RUNNER_TEMP/sysvena/dependabot-changeset.mjs" "$BASE_SHA" "$HEAD_REF")
+          jq . <<< "$plan"
+          # One line of JSON (newlines in the changeset are escaped).
+          echo "plan=$plan" >> "$GITHUB_OUTPUT"
+
+  commit:
+    name: Commit the changeset
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Accepts only what scripts/dependabot-changeset.mjs writes: its file
+      # name, and a changeset that releases nothing or patches named packages,
+      # with a one-line summary of plain characters.
+      - name: Check the plan
+        id: check
+        env:
+          PLAN: ${{ needs.plan.outputs.plan }}
+        run: |
+          set -euo pipefail
+          path=$(jq -er '.path | strings' <<< "$PLAN")
+          if [[ ! "$path" =~ ^\.changeset/dependabot-[a-z0-9-]+\.md$ ]]; then
+            echo "::error::Unexpected changeset path: $path"
+            exit 1
+          fi
+          file="$RUNNER_TEMP/changeset.md"
+          if jq -e '.content == null' <<< "$PLAN" > /dev/null; then
+            write=false
+            echo "No changeset needed: $(jq -r .reason <<< "$PLAN")"
+          else
+            write=true
+            jq -jer '.content | strings' <<< "$PLAN" > "$file"
+            name='"(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*": patch'
+            text='[A-Za-z0-9 @/._~^<>=*|+:,()`→-]+'
+            summary="^(Update dependencies: $text\\.|Update locked dependency versions\\.|Update development dependencies \\(no release\\): $text\\.|Update locked dependency versions \\(no release\\)\\.)\$"
+            mapfile -t lines < "$file"
+            n=${#lines[@]}
+            ok=true
+            [ "$(tail -c 1 "$file" | od -An -c | tr -d ' ')" = '\n' ] || ok=false
+            [ "$n" -ge 4 ] && [ "${lines[0]}" = "---" ] || ok=false
+            i=1
+            while $ok && [ "$i" -lt "$n" ] && [ "${lines[$i]}" != "---" ]; do
+              [[ "${lines[$i]}" =~ ^$name$ ]] || ok=false
+              i=$((i + 1))
+            done
+            if $ok; then
+              [ "$((i + 3))" -eq "$n" ] && [ "${lines[$i]}" = "---" ] && [ -z "${lines[$((i + 1))]}" ] \
+                && [[ "${lines[$((i + 2))]}" =~ $summary ]] || ok=false
+            fi
+            if ! $ok; then
+              echo "::error::The planned changeset is not in the expected form:"
+              cat "$file"
+              exit 1
+            fi
+            echo "Changeset $path:"; cat "$file"
+          fi
+          { echo "path=$path"; echo "write=$write"; } >> "$GITHUB_OUTPUT"
+
+      - name: Create a sysvena-dependabot token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-contents: write # to push the changeset to the PR branch
+
+      # The commit the plan was made for; the push below fails if Dependabot
+      # moved the branch since, and its push runs this workflow again.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Commit and push
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          CHANGESET: ${{ steps.check.outputs.path }}
+          WRITE: ${{ steps.check.outputs.write }}
+        run: |
+          set -euo pipefail
+          if [ "$WRITE" = true ]; then
+            mkdir -p .changeset
+            cp "$RUNNER_TEMP/changeset.md" "$CHANGESET"
+            message="chore(changeset): add the changeset for this update [dependabot skip]"
+          else
+            rm -f "$CHANGESET"
+            message="chore(changeset): remove the changeset of this update [dependabot skip]"
+          fi
+          git add -A -- "$CHANGESET"
+          if git diff --cached --quiet; then
+            echo "The changeset is up to date."
+            exit 0
+          fi
+          bot="${APP_SLUG}[bot]"
+          id=$(gh api "users/${APP_SLUG}%5Bbot%5D" --jq .id)
+          git -c user.name="$bot" -c user.email="${id}+${bot}@users.noreply.github.com" commit -q -m "$message"
+          git push origin "HEAD:refs/heads/$HEAD_REF"
+          echo "Pushed $(git rev-parse --short HEAD) to $HEAD_REF: $message"

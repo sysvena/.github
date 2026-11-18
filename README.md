@@ -268,6 +268,37 @@ are on through the org security configuration.
   of the gates. Merge it like any other gate change, then release it (see
   "Releasing a new version of the gates").
 
+## Dependabot changeset
+
+`.github/workflows/dependabot-changeset.yml` is a reusable workflow that adds
+the changeset a Dependabot PR needs, so the changeset gate passes. A
+repository with Changesets calls it from its own workflow (the call is in the
+comment at the top of the file), pinned by commit SHA and listed in its
+workflow lockfile; Dependabot (`github-actions`) moves the pin.
+
+- **What it writes** (`scripts/dependabot-changeset.mjs`, tested by
+  `tests/scripts/dependabot-changeset.test.mjs`): a patch release of a package
+  whose `dependencies`, `peerDependencies` or `optionalDependencies` changed;
+  a patch release of a package that ships its lockfile (the lockfile is in its
+  own directory, as in a single-package app) for any dependency change, the
+  lockfile alone included; an empty changeset when only development
+  dependencies or the lockfile of a library changed; nothing when no versioned
+  package changed.
+- **Security:** it runs only for PRs that Dependabot opened and triggered, from
+  a branch of the same repository. The plan job has no secrets and installs
+  nothing. The commit job checks the plan strictly and pushes the one file
+  with a token of the GitHub App `sysvena-dependabot`.
+- **Source of the script:** the plan job checks the script out from this
+  repository at the commit the caller pinned (`job.workflow_repository`,
+  `job.workflow_sha`), never from the caller's repository. actionlint 1.7.12
+  does not know these documented properties (rhysd/actionlint#707), so
+  `.github/actionlint.yaml` ignores exactly that error in this one file until
+  the actionlint image has the fix.
+- **A repository that calls it needs:** the App `sysvena-dependabot`
+  installed on it, and the repository in the selected repositories of the
+  Dependabot secrets `SYSVENA_DEPENDABOT_APP_CLIENT_ID` and
+  `SYSVENA_DEPENDABOT_APP_PRIVATE_KEY` (both set by an organization owner).
+
 ## Re-running the gates
 
 `gh run rerun` cannot find a workflow from another repository (HTTP 404), so
