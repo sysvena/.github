@@ -6,7 +6,20 @@
 # repos/*/pulls/<n>/files and "$FIX/compare.json" for
 # repos/*/dependency-graph/compare/<base>...<head>, and applies --jq the way gh
 # does (strings raw). Every call is logged to "$FIX/calls".
+# With FAIL_ONCE=1 the first call for each path (or the first download) fails
+# the way a transient error does: `api` with gh's "HTTP 502" message,
+# `release download` with a broken connection.
 set -euo pipefail
+# fail_once <key> <message>: fails the first call for <key> in this fixture.
+fail_once() {
+  local mark
+  mark="$FIX/failed-$(printf '%s' "$1" | sha256sum | cut -c1-16)"
+  if [ "${FAIL_ONCE:-}" = 1 ] && [ ! -e "$mark" ]; then
+    : > "$mark"
+    echo "$2" >&2
+    exit 1
+  fi
+}
 if [ "${1-}" = release ] && [ "${2-}" = download ]; then
   tag=$3 repo="" pattern="" out=""
   shift 3
@@ -21,6 +34,7 @@ if [ "${1-}" = release ] && [ "${2-}" = download ]; then
     shift
   done
   printf 'release download %s %s %s\n' "$tag" "$repo" "$pattern" >> "$FIX/calls"
+  fail_once "release download" "read tcp: connection reset by peer"
   cp "$FIX/asset" "$out"
   exit 0
 fi
@@ -35,6 +49,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 printf '%s\n' "$path" >> "$FIX/calls"
+fail_once "api $path" "gh: Server Error (HTTP 502)"
 case "$path" in
   repos/*/dependency-graph/compare/*...*) file="$FIX/compare.json" ;;
   repos/*/pulls/*/files) file="$FIX/files.json" ;;

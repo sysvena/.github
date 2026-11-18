@@ -93,6 +93,25 @@ Gates:
   `.github/workflows/actions.lock` and every action pinned to a commit SHA
   (see "Workflow lockfile").
 
+Transient network errors do not fail a gate. Each job checks out
+`scripts/lib` of this repository at the commit the gates run from
+(`github.workflow_sha`) and uses it:
+
+- `gh_read` (`scripts/lib/gh-retry.sh`) for every GitHub API read: HTTP 500,
+  502, 503 and 504 are retried up to 3 times after 1, 4 and 9 seconds, as
+  GitHub's own client `@octokit/plugin-retry` does.
+- `retry_download` (`scripts/lib/retry-download.sh`, tested by
+  `tests/scripts/retry-download.sh` in CI) for the two downloads that have no
+  retry of their own: `corepack install` (the Yarn release in
+  `packageManager`, checked against its hash) and the pinned `gh-actions-lock`
+  binary (checked against its SHA-256). A connection that breaks
+  mid-download ends Corepack with a stream error, not an HTTP status, so
+  every failure is retried, with the same waits.
+
+`yarn install` retries on its own (Yarn's `httpRetry`, default 3), and so do
+`actions/checkout` and `actions/dependency-review-action`
+(`@octokit/plugin-retry`).
+
 Each repository keeps its own `.github/workflows/ci.yml` only for checks that
 are specific to it (for example typecheck, test and build). Workflows that
 upload artifacts set `retention-days: 7`.
@@ -219,7 +238,7 @@ running test (`tests/scripts/edit-safe.sh`, run in CI, checks this).
 Both scripts need `gh` logged in as an org owner (scopes `repo`, `admin:org`
 and `workflow`, for the test PR that adds a workflow file) and `jq`.
 
-Both scripts call the GitHub API through `scripts/lib/gh-retry.sh` (tested by
+Both scripts, like the gates themselves, call the GitHub API through `scripts/lib/gh-retry.sh` (tested by
 `tests/scripts/gh-retry.sh` in CI), which survives GitHub's transient server
 errors (HTTP 500, 502, 503, 504) with up to 3 retries after 1, 4 and 9
 seconds, as GitHub's own client `@octokit/plugin-retry` does. `gh_read`
