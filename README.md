@@ -334,3 +334,7 @@ if it still shows the old title or labels, re-run again.
 
 Changes to the gates go through a PR here and apply to every repository at
 once.
+
+## Licence
+
+MIT, see [`LICENSE`](LICENSE).
