@@ -222,9 +222,10 @@ excludes it.
 1. **Before merge:** CI runs the gate tests (`tests/gates/run.sh`, the real
    step scripts against fixtures) and actionlint. The end-to-end test
    (`tests/e2e/gates-e2e.sh <commit>`) runs once, inside the promotion (step 3),
-   not also here: one run costs about a hundred gate runs of Actions minutes,
-   and production stays on its pinned commit until the promotion's test
-   passes. It points the canary ruleset at the commit, opens test PRs on `gates-canary` (valid change; `fix` title without a test,
+   not also here: one run opens 27 test PRs and re-runs three (30 gate runs)
+   and costs about 140 billed Actions minutes (about 90 for the gates and 50
+   for CodeQL on the canary, measured on 2026-11-18), and production stays on
+   its pinned commit until the promotion's test passes. It points the canary ruleset at the commit, opens test PRs on `gates-canary` (valid change; `fix` title without a test,
    then a title edit and a `bug` label with re-runs; title without a type;
    a description without the self-check, then edited, with a re-run;
    title type `style`;
