@@ -2,6 +2,8 @@
 
 Shared GitHub configuration for the `sysvena` organization.
 
+To report a security problem, see the [security policy](SECURITY.md).
+
 ## Organization rulesets
 
 All on the default branch of the repositories they target, with **no bypass
@@ -45,7 +47,8 @@ and GitHub Code Security (one active committer each) and turns on:
   that an owner approves or denies;
 - CodeQL code scanning, default setup (languages detected per repository);
 - the dependency graph, Dependabot alerts and Dependabot security updates;
-- private vulnerability reporting stays off.
+- private vulnerability reporting (it exists for public repositories only;
+  today that is this repository).
 
 Dependency review in the gates needs Code Security and the dependency graph.
 
