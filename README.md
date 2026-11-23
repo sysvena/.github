@@ -23,10 +23,13 @@ The CodeQL check of default setup reports "success" even when it finds an
 alert; the ruleset rule is what blocks the merge.
 
 In an emergency an organization owner can set a ruleset to "Disabled" and back
-to "Active" afterwards; both changes are in the organization audit log. A PR
-opened by a workflow with `GITHUB_TOKEN` (for example the release PR) gets its
-runs in an approval-required state: approve them in the PR ("Approve workflows
-to run").
+to "Active" afterwards; both changes are in the organization audit log.
+GitHub does not run a ruleset workflow on an event triggered by
+`GITHUB_TOKEN` (GitHub Docs, Troubleshooting rules), so a PR that a workflow
+opens with that token gets no gates run. The workflows here open their PRs and
+push with the token of a GitHub App instead (the release PR: `sysvena-release`;
+the Dependabot changeset: `sysvena-dependabot`). Not observed here: no PR has
+been opened with `GITHUB_TOKEN` since the gates are required.
 
 ## Security configuration
 
@@ -62,11 +65,12 @@ re-run of an older run also checks the current PR (see "Re-running the gates").
 The gates run in two jobs, split by trust. **Gates** holds the ones that run
 no code from the PR (PR title, PR description, Regression test, Dependency
 review, Workflow lockfile). **Repo checks** holds the ones that do (Changeset,
-lessons, agent rules: they install the PR's dependencies and run its
-scripts), so that code can never change the result of a gate in the other
-job. Each gate is a step named after it (or several, `<gate>: …`); every gate
-runs even when another one failed, and each job's summary lists every gate as
-passed, failed or did not apply. Two jobs, not one per gate, because GitHub
+lessons, agent rules: they install the PR's dependencies, with the packages'
+install scripts switched off, and run its scripts), so that code can never
+change the result of a gate in the other job. Each gate is a step named after
+it (or several, `<gate>: …`); every gate runs even when another one failed,
+and each job's summary lists every gate as passed, failed, not run (a step it
+needs failed) or did not apply. Two jobs, not one per gate, because GitHub
 bills every job as at least one whole minute.
 
 Gates:
@@ -143,8 +147,7 @@ its steps in the Gates job of `sysvena-gates.yml`; in short:
   If a vulnerability cannot be fixed, its GHSA id goes into `ALLOW_GHSAS`
   with the review behind it, through a PR here (now: GHSA-3g3m-2fjr-6pw4,
   glob, until the Mercato 0.10.0 upgrade; GHSA-g3hv-75wg-m249, minimatch,
-  until jest and testcontainers ship a patched version; GHSA-fc5q-39xc-vjpf,
-  picomatch, until a patched version exists).
+  until jest and testcontainers ship a patched version).
 - **Licences:** an allow list (`ALLOW_LICENSES`) of licences that both Google's
   classification and the Blue Oak Council list rate permissive, plus
   CC-BY-4.0 for data. A dependency whose licence the dependency graph cannot
@@ -235,9 +238,9 @@ excludes it.
    title type `style`;
    shipped file without a changeset; README change without and with an empty
    changeset; a PR that loosens the changeset config; a PR that edits the synced
-   agent rules (`.ai/project-rules.md`), which Repo checks must refuse; a vulnerable development dependency, three with reviewed advisories, a
+   agent rules (`.ai/project-rules.md`), which Repo checks must refuse; a vulnerable development dependency, two with reviewed advisories, one whose advisory was withdrawn, a
    dependency under MPL-2.0, an action with no licence, a clean dependency and
-   an own package, an LGPL package (prebuilt libvips of sharp), a compound BSD licence (uri-js), two misdetected licences (json-schema-typed, leac), and MPL and Windows sharp packages with an exception for dependency review), checks each gate's result, the gates
+   an own package, an LGPL package (prebuilt libvips of sharp), a compound BSD licence (uri-js), a misdetected licence (json-schema-typed) and a package whose licence was corrected (leac), and MPL and Windows sharp packages with an exception for dependency review), checks each gate's result, the gates
    version the run reports, the canary's `.nvmrc` Node version and the lessons
    check, and closes the PRs and deletes their branches. Extend it when a gate
    changes. When it fails during a promotion, production is unchanged: fix it
