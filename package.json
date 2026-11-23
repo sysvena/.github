@@ -1,0 +1,12 @@
+{
+  "name": "sysvena-dot-github",
+  "private": true,
+  "description": "Dependencies of scripts/dependabot-changeset.mjs (README, \"Dependabot changeset\").",
+  "license": "MIT",
+  "dependencies": {
+    "picomatch": "4.0.7"
+  },
+  "devDependencies": {
+    "@changesets/git": "4.0.1"
+  }
+}

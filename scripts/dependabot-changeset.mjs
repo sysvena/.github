@@ -11,9 +11,13 @@
 //
 // It decides which packages changed the way Changesets 3 does
 // (@changesets/git getChangedPackagesSinceRef, @changesets/should-skip-package):
-// a package changed when any file in its directory changed since the merge
-// base; a package is versioned unless it is in `ignore`, has no `version`, or
-// is private without `privatePackages.version`. Packages come from
+// a package changed when a file in its directory changed since the merge base
+// and that file matches `changedFilePatterns` (default `["**"]`); a package is
+// versioned unless it is in `ignore`, has no `version`, or is private without
+// `privatePackages.version`. The patterns are matched as Changesets matches
+// them, with the same library (picomatch) and a copy of its loop; a test
+// compares the result with @changesets/git itself
+// (tests/scripts/dependabot-changeset.test.mjs). Packages come from
 // `yarn workspaces list` (the root only in a single-package repository), the
 // config from `.changeset/config.json` of the base commit, as in the gate.
 // Then:
@@ -27,10 +31,12 @@
 //   - otherwise (only `devDependencies` or the lockfile of a library
 //     changed) the changeset is empty: the change releases nothing, which is
 //     what `changeset --empty` records.
-// It runs no code from the repository's dependencies and needs no install:
-// only node, git and yarn (the version in packageManager, through corepack).
+// It runs no code from the repository's dependencies and installs nothing of
+// the repository: only node, git and yarn (the version in packageManager,
+// through corepack), and picomatch from the lockfile of sysvena/.github.
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import picomatch from 'picomatch'
 
 export const RELEASE_FIELDS = ['dependencies', 'peerDependencies', 'optionalDependencies']
 export const DEV_FIELDS = ['devDependencies']
@@ -68,19 +74,36 @@ export function ignoreMatcher(patterns) {
   return (name) => regexes.some((regex) => regex.test(name))
 }
 
-export function readConfig(config) {
-  if (config.changedFilePatterns !== undefined) {
-    const patterns = config.changedFilePatterns
-    if (!(Array.isArray(patterns) && patterns.length === 1 && patterns[0] === '**')) {
-      throw new Error('changedFilePatterns other than ["**"] is not supported; add the changeset by hand.')
+// Whether one of the paths matches the patterns: a copy of `globMatchSome` of
+// @changesets/git 4.0.1 (src/index.ts). picomatch without options, so a `*` or
+// `**` does not match a name that starts with a dot; the patterns apply in
+// list order, and a negated pattern (`!…`) takes back a match made before it.
+export function matchesSome(paths, patterns) {
+  const matchers = patterns.map((pattern) => picomatch(pattern, undefined, true))
+  return paths.some((path) => {
+    let passed = false
+    for (const matcher of matchers) {
+      if (!passed) {
+        if (!matcher.state.negated && matcher(path)) passed = true
+      } else if (matcher.state.negated && !matcher(path)) {
+        passed = false
+      }
     }
+    return passed
+  })
+}
+
+export function readConfig(config) {
+  const changedFilePatterns = config.changedFilePatterns ?? ['**']
+  if (!Array.isArray(changedFilePatterns) || !changedFilePatterns.every((p) => typeof p === 'string' && p !== '')) {
+    throw new Error('changedFilePatterns in .changeset/config.json must be a list of patterns.')
   }
   const privatePackages = config.privatePackages
   const versionPrivate =
     typeof privatePackages === 'object' && privatePackages !== null
       ? privatePackages.version === true
       : privatePackages === true
-  return { isIgnored: ignoreMatcher(config.ignore ?? []), versionPrivate }
+  return { isIgnored: ignoreMatcher(config.ignore ?? []), versionPrivate, changedFilePatterns }
 }
 
 export function isVersioned(packageJson, config) {
@@ -98,17 +121,22 @@ export function packageDirs(workspaces) {
 }
 
 // Assigns each changed file to the deepest package directory that contains it,
-// as Changesets does. Changeset files themselves are left out.
-export function changedDirs(dirs, files) {
-  const remaining = files.filter((file) => !file.startsWith('.changeset/'))
+// as Changesets does; a package changed when one of its files, as a path
+// relative to its directory, matches the patterns. A changeset file counts
+// like any other file: `.changeset/…` starts with a dot, so only a pattern
+// that names it matches it.
+export function changedDirs(dirs, files, patterns = ['**']) {
+  const remaining = [...files]
   const changed = new Set()
   for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+    const own = []
     for (let i = remaining.length - 1; i >= 0; i--) {
-      if (dir === '.' || remaining[i].startsWith(`${dir}/`)) {
-        remaining.splice(i, 1)
-        changed.add(dir)
-      }
+      if (dir === '.') own.push(remaining[i])
+      else if (remaining[i].startsWith(`${dir}/`)) own.push(remaining[i].slice(dir.length + 1))
+      else continue
+      remaining.splice(i, 1)
     }
+    if (matchesSome(own, patterns)) changed.add(dir)
   }
   return changed
 }
@@ -143,7 +171,11 @@ function describe(change) {
 export function plan(branch, packages) {
   const path = changesetPath(branch)
   if (packages.length === 0) {
-    return { path, content: null, reason: 'No versioned package changed: no changeset needed.' }
+    return {
+      path,
+      content: null,
+      reason: 'No versioned package has a changed file that matches changedFilePatterns: no changeset needed.',
+    }
   }
   const release = []
   const devChanges = []
@@ -194,6 +226,13 @@ function exists(cwd, rev, file) {
   }
 }
 
+// The directories of the packages that changed between the merge base and
+// HEAD: what `getChangedPackagesSinceRef` of @changesets/git answers.
+export function changedPackageDirs({ cwd, mergeBase, workspaces, patterns }) {
+  const files = git(cwd, ['diff', '--name-only', '--no-relative', mergeBase, 'HEAD']).split('\n').filter(Boolean)
+  return changedDirs(packageDirs(workspaces), files, patterns)
+}
+
 // listWorkspaces: () => [{location, name}]; replaced in tests.
 export function run({ cwd, base, branch, listWorkspaces }) {
   const mergeBase = git(cwd, ['merge-base', base, 'HEAD']).trim()
@@ -202,9 +241,12 @@ export function run({ cwd, base, branch, listWorkspaces }) {
     return { path: changesetPath(branch), content: null, reason: 'The base commit does not use Changesets.' }
   }
   const settings = readConfig(config)
-  const files = git(cwd, ['diff', '--name-only', '--no-relative', mergeBase, 'HEAD']).split('\n').filter(Boolean)
-  const dirs = packageDirs(listWorkspaces())
-  const changed = changedDirs(dirs, files)
+  const changed = changedPackageDirs({
+    cwd,
+    mergeBase,
+    workspaces: listWorkspaces(),
+    patterns: settings.changedFilePatterns,
+  })
   const packages = []
   for (const dir of [...changed].sort()) {
     const file = dir === '.' ? 'package.json' : `${dir}/package.json`
