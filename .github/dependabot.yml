@@ -26,6 +26,24 @@ updates:
       github-actions:
         update-types: [minor, patch]
 
+  # package.json: picomatch, the dependency of scripts/dependabot-changeset.mjs,
+  # and @changesets/git, which its tests compare it with (README, "Dependabot
+  # changeset").
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: build
+      prefix-development: build
+      include: scope
+    groups:
+      npm:
+        update-types: [minor, patch]
+
   # The actionlint image CI runs (tools/actionlint/Dockerfile).
   - package-ecosystem: docker
     directory: /tools/actionlint

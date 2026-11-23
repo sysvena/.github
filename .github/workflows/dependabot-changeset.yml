@@ -6,7 +6,8 @@ name: Dependabot changeset
 # is: a patch release of a package whose runtime dependencies changed, or of
 # an app that ships its lockfile for any dependency change; an empty
 # changeset when only development dependencies or the lockfile of a library
-# changed; none when no versioned package changed.
+# changed; none when no versioned package has a changed file that matches
+# `changedFilePatterns` of its Changesets configuration.
 #
 # A repository calls it from its own workflow, pinned by commit SHA (see
 # README, "Dependabot changeset"):
@@ -36,8 +37,12 @@ name: Dependabot changeset
 #     Dependabot opened the PR, from a branch of this repository, and
 #     Dependabot triggered the run (`github.actor`); a re-run keeps the
 #     privileges of the first run.
-#   - `plan` has no secrets and a read-only token. It installs nothing, so no
-#     code of a dependency runs; it reads files with node, git and yarn.
+#   - `plan` has no secrets and a read-only token. It installs nothing of the
+#     repository of the PR, so no code of its dependencies runs; it reads
+#     files with node, git and yarn. The script's one dependency (picomatch,
+#     the glob library of Changesets) is installed outside the workspace from
+#     the lockfile of this repository at the pinned commit, without install
+#     scripts.
 #   - `commit` holds the token of the GitHub App `sysvena-dependabot`
 #     (contents: write on the repositories it is installed on; the client ID
 #     and key are Dependabot secrets, the only secrets a Dependabot run gets).
@@ -81,10 +86,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The script at the commit of this workflow that the caller pinned. The
-      # workflow commit is checked, so a missing context fails instead of
-      # checking out the default branch. It moves to $RUNNER_TEMP, so the
-      # workspace holds only the repository of the PR.
+      # The script, its package files and the retry helper at the commit of
+      # this workflow that the caller pinned. The workflow commit is checked,
+      # so a missing context fails instead of checking out the default branch.
+      # They move to $RUNNER_TEMP, so the workspace holds only the repository
+      # of the PR.
       - name: Check the workflow commit
         env:
           WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
@@ -103,19 +109,36 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .sysvena-dependabot-changeset
-          sparse-checkout: scripts/dependabot-changeset.mjs
+          sparse-checkout: |
+            /scripts/dependabot-changeset.mjs
+            /scripts/lib/retry-download.sh
+            /package.json
+            /package-lock.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Move the script out of the workspace
         run: |
+          set -euo pipefail
           mkdir -p "$RUNNER_TEMP/sysvena"
-          mv .sysvena-dependabot-changeset/scripts/dependabot-changeset.mjs "$RUNNER_TEMP/sysvena/"
+          mv .sysvena-dependabot-changeset/scripts .sysvena-dependabot-changeset/package.json \
+            .sysvena-dependabot-changeset/package-lock.json "$RUNNER_TEMP/sysvena/"
           rm -rf .sysvena-dependabot-changeset
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+
+      # picomatch, from package-lock.json of this repository (exact version
+      # and integrity hash); no development dependency, no install script.
+      # `npm ci` only fetches what the lockfile pins, so it can run again.
+      - name: Install the script's dependency
+        working-directory: ${{ runner.temp }}/sysvena
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/lib/retry-download.sh
+          . scripts/lib/retry-download.sh
+          retry_download npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
       - name: Plan
         id: plan
@@ -125,7 +148,7 @@ jobs:
         run: |
           set -euo pipefail
           corepack enable
-          plan=$(node "$RUNNER_TEMP/sysvena/dependabot-changeset.mjs" "$BASE_SHA" "$HEAD_REF")
+          plan=$(node "$RUNNER_TEMP/sysvena/scripts/dependabot-changeset.mjs" "$BASE_SHA" "$HEAD_REF")
           jq . <<< "$plan"
           # One line of JSON (newlines in the changeset are escaped).
           echo "plan=$plan" >> "$GITHUB_OUTPUT"

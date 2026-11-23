@@ -268,8 +268,10 @@ the job ends, which stopped promotions before.
 `.github/dependabot.yml` turns on Dependabot version updates; security updates
 are on through the org security configuration.
 
-- **What:** the actions in the workflows (`github-actions`) and the actionlint
-  image (`docker`, `tools/actionlint/Dockerfile`). That file is only a version
+- **What:** the actions in the workflows (`github-actions`), the two packages
+  of `package.json` (`npm`: picomatch and `@changesets/git`, see "Dependabot
+  changeset") and the actionlint image (`docker`,
+  `tools/actionlint/Dockerfile`). That file is only a version
   source: CI runs the image its `FROM` line names, because Dependabot does not
   update `uses: docker://` (dependabot/dependabot-core#8362). It lives outside
   `.github/`, where Dependabot may change files only for `github-actions`
@@ -299,10 +301,23 @@ workflow lockfile; Dependabot (`github-actions`) moves the pin.
   lockfile alone included; an empty changeset when only development
   dependencies or the lockfile of a library changed; nothing when no versioned
   package changed.
+- **Which packages changed:** as Changesets decides it. A package changed
+  when one of its changed files, as a path relative to the package, matches
+  `changedFilePatterns` of `.changeset/config.json` (default `["**"]`). The
+  script uses the library Changesets uses (picomatch, the exact version in
+  `package.json`) and a copy of its loop, so a `*` or `**` does not match a
+  name that starts with a dot (`.github/…` needs its own pattern), and a
+  negated pattern takes back a match made before it. The tests run
+  `@changesets/git` (a development dependency) on the same cases and require
+  the same answer. When Dependabot raises either package, a failing test
+  means the script no longer decides as that version of Changesets does.
 - **Security:** it runs only for PRs that Dependabot opened and triggered, from
   a branch of the same repository. The plan job has no secrets and installs
-  nothing. The commit job checks the plan strictly and pushes the one file
-  with a token of the GitHub App `sysvena-dependabot`.
+  nothing of the PR's repository; it installs picomatch outside the workspace
+  with `npm ci --omit=dev --ignore-scripts` from the lockfile of this
+  repository at the pinned commit. The commit job checks the plan strictly
+  and pushes the one file with a token of the GitHub App
+  `sysvena-dependabot`.
 - **Source of the script:** the plan job checks the script out from this
   repository at the commit the caller pinned (`job.workflow_repository`,
   `job.workflow_sha`), never from the caller's repository. actionlint 1.7.12
