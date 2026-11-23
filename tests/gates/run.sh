@@ -64,13 +64,19 @@ report() { # <ok> <name> <detail>
 #   labels:  comma-separated label names
 #   files:   semicolon-separated "path status" pairs (status as in the API)
 #   options: message=<text the changes gate must print>
+#            title-message=<text the title gate must print>
+#            author=<login of the PR's author> (default someone)
+#            head-repo=<repository of the head branch> (default o/r, the PR's own)
 pr_case() {
   local name=$1 want_title=$2 want_changes=$3 title=$4 labels=$5 files=$6
   shift 6
-  local message="" opt
+  local message="" title_message="" author=someone head_repo=o/r opt
   for opt in "$@"; do
     case "$opt" in
       message=*) message=${opt#message=} ;;
+      title-message=*) title_message=${opt#title-message=} ;;
+      author=*) author=${opt#author=} ;;
+      head-repo=*) head_repo=${opt#head-repo=} ;;
       *) echo "Unknown option: $opt" >&2; exit 2 ;;
     esac
   done
@@ -100,7 +106,8 @@ pr_case() {
   snapshot=$(sed -n 's/^pr=//p' "$work/output")
 
   local got_title=pass got_changes=pass
-  (cd "$work" && PR_SNAPSHOT="$snapshot" bash -e "$tmp/title.sh" > "$work/title.log" 2>&1) || got_title=fail
+  (cd "$work" && PR_SNAPSHOT="$snapshot" AUTHOR="$author" HEAD_REPO="$head_repo" REPO=o/r \
+    bash -e "$tmp/title.sh" > "$work/title.log" 2>&1) || got_title=fail
   (cd "$work" && FIX="$fix" PATH="$stub:$PATH" REPO=o/r PR=1 PR_SNAPSHOT="$snapshot" \
     bash -e "$tmp/changes.sh" > "$work/changes.log" 2>&1) || got_changes=fail
 
@@ -112,6 +119,10 @@ pr_case() {
   if [ "$got_changes" != "$want_changes" ]; then
     ok=false
     detail+="Changes gate: got $got_changes, want $want_changes"$'\n'"$(cat "$work/changes.log")"$'\n'
+  fi
+  if [ -n "$title_message" ] && ! grep -qF -- "$title_message" "$work/title.log"; then
+    ok=false
+    detail+="PR title gate did not print: $title_message"$'\n'"$(cat "$work/title.log")"$'\n'
   fi
   if [ -n "$message" ] && ! grep -qF -- "$message" "$work/changes.log"; then
     ok=false
@@ -144,16 +155,17 @@ detect_case() {
   fi
 }
 
-# desc_case <name> <expect pass|fail> <body> [head=<ref>] [author=<login>] [message=<text>]
+# desc_case <name> <expect pass|fail> <body> [head=<ref>] [author=<login>] [head-repo=<repository>] [message=<text>]
 # Runs "Read the PR" on a fixture with this body, then "Check the PR description"
 # on the snapshot it wrote, as the workflow does.
 desc_case() {
   local name=$1 want=$2 body=$3
   shift 3
-  local head=feature/x author=someone message="" opt
+  local head=feature/x author=someone head_repo=o/r message="" opt
   for opt in "$@"; do
     case "$opt" in
       head=*) head=${opt#head=} ;;
+      head-repo=*) head_repo=${opt#head-repo=} ;;
       author=*) author=${opt#author=} ;;
       message=*) message=${opt#message=} ;;
       *) echo "Unknown option: $opt" >&2; exit 2 ;;
@@ -171,7 +183,7 @@ desc_case() {
   fi
   local snapshot got=pass
   snapshot=$(sed -n 's/^pr=//p' "$work/output")
-  (cd "$work" && PR_SNAPSHOT="$snapshot" HEAD_REF="$head" AUTHOR="$author" \
+  (cd "$work" && PR_SNAPSHOT="$snapshot" HEAD_REF="$head" AUTHOR="$author" HEAD_REPO="$head_repo" REPO=o/r \
     bash -e "$tmp/description.sh" > "$work/desc.log" 2>&1) || got=fail
   local ok=true detail=""
   if [ "$got" != "$want" ]; then
@@ -440,6 +452,17 @@ pr_case "title with quotes and \$(...) is data, not code" pass pass \
   'feat: handle "quotes" and $(whoami)' "" "src/a.ts modified"
 pr_case "title over 72 characters fails" fail pass \
   "feat: $(printf 'a%.0s' $(seq 1 70))" "" "src/a.ts modified"
+long='build(deps): Bump actions/create-github-app-token from 3.3.0 to 3.4.0 in the github-actions group across 1 directory'
+pr_case "a Dependabot title over 72 characters passes, and the run says so" pass pass \
+  "$long" "" "yarn.lock modified" author='dependabot[bot]' title-message="the limit of 72 is not checked"
+pr_case "the same title by a person fails" fail pass \
+  "$long" "" "yarn.lock modified" title-message="keep it at 72 or fewer"
+pr_case "the same title by Dependabot from another repository fails" fail pass \
+  "$long" "" "yarn.lock modified" author='dependabot[bot]' head-repo=x/fork title-message="keep it at 72 or fewer"
+pr_case "a Dependabot title without the form fails" fail pass \
+  "Bump actions/create-github-app-token from 3.3.0 to 3.4.0" "" "yarn.lock modified" author='dependabot[bot]'
+pr_case "a long Dependabot title without the form fails" fail pass \
+  "Bump ${long#*: Bump }" "" "yarn.lock modified" author='dependabot[bot]'
 pr_case "title without a type fails" fail pass \
   "Add export" "" "src/a.ts modified"
 for type in feat fix chore docs style refactor test perf ci build revert; do
@@ -483,8 +506,10 @@ detect_case "other @sysvena package is not agent rules" "agent-rules=false lesso
 echo "# Dependency review: policy"
 dr='.jobs.gates'
 review="$dr.steps[] | select(.name == \"Dependency review\")"
-policy_case "action pinned to the v5.0.0 commit" "$review | .uses" \
-  "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294"
+# The form of the pin, not one commit: Dependabot moves the commit, and the
+# Workflow lockfile gate verifies it.
+policy_case "action pinned to a full commit SHA" \
+  "$review | .uses | test(\"^actions/dependency-review-action@[0-9a-f]{40}$\")" "true"
 policy_case "fails on every severity" "$review | .with.\"fail-on-severity\"" "low"
 policy_case "fails in every scope" "$review | .with.\"fail-on-scopes\"" "runtime, development, unknown"
 # shellcheck disable=SC2016 # literal workflow expressions, not shell
@@ -680,6 +705,7 @@ desc_case "the filled PR template passes" pass \
 desc_case "a hint in an HTML comment is not content" fail "**Sources/tests:** <!-- x -->${nl}**Quality:** None."
 desc_case "a release PR is exempt" pass "" head=changeset-release/main message="Release PR"
 desc_case "a Dependabot PR is exempt" pass "Bumps x." author='dependabot[bot]' message="Dependabot PR"
+desc_case "a PR by Dependabot from another repository is not exempt" fail "Bumps x." author='dependabot[bot]' head-repo=x/fork
 desc_case "a branch merely containing changeset-release is not exempt" fail "" head=feature/changeset-release/x
 
 # install_case <name> <step script> <corepack failures>

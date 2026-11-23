@@ -236,6 +236,9 @@ jobs:
         timeout-minutes: 5
         env:
           PR_SNAPSHOT: ${{ steps.pr.outputs.pr }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           TITLE=$(jq -r '.title' <<< "$PR_SNAPSHOT")
@@ -248,9 +251,18 @@ jobs:
             echo "::error::PR title must be '<type>(<area>): <summary>' with type feat, fix, chore, docs, style, refactor, test, perf, ci, build or revert (the types of @commitlint/config-conventional). Got: $TITLE"
             exit 1
           fi
+          # Dependabot writes its own title, without a template or a length
+          # option, and puts it back when it rebases (dependabot-core#1460,
+          # #15973): a PR it opened from a branch of this repository is exempt
+          # from the length, and from nothing else. The author of the PR, not
+          # `github.actor`, which is whoever caused the latest event.
           if [ "${#TITLE}" -gt 72 ]; then
-            echo "::error::PR title is ${#TITLE} characters; keep it at 72 or fewer."
-            exit 1
+            if [ "$AUTHOR" = 'dependabot[bot]' ] && [ "$HEAD_REPO" = "$REPO" ]; then
+              echo "PR title is ${#TITLE} characters; the limit of 72 is not checked for a PR that Dependabot opened."
+            else
+              echo "::error::PR title is ${#TITLE} characters; keep it at 72 or fewer."
+              exit 1
+            fi
           fi
           echo "PR title OK: $TITLE"
 
@@ -258,7 +270,8 @@ jobs:
       # CODE_REVIEW.md: a "Sources/tests:" part, then a "Quality:" part, each with
       # content. The label may be bold (**Sources/tests:**) or a heading
       # (## Sources/tests:). Release PRs (`changeset-release/*`, written by the
-      # Changesets action) and Dependabot PRs are exempt: no agent writes them.
+      # Changesets action) and Dependabot PRs (opened by Dependabot from a branch
+      # of this repository) are exempt: no agent writes them.
       # Editing the description alone starts no run (see the header); re-run the
       # Gates job after the edit.
       - name: PR description
@@ -269,13 +282,15 @@ jobs:
           PR_SNAPSHOT: ${{ steps.pr.outputs.pr }}
           HEAD_REF: ${{ github.head_ref }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [[ "$HEAD_REF" == changeset-release/* ]]; then
             echo "Release PR ($HEAD_REF): no self-check needed."
             exit 0
           fi
-          if [ "$AUTHOR" = 'dependabot[bot]' ]; then
+          if [ "$AUTHOR" = 'dependabot[bot]' ] && [ "$HEAD_REPO" = "$REPO" ]; then
             echo "Dependabot PR: no self-check needed."
             exit 0
           fi
