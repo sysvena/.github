@@ -9,7 +9,8 @@ name: sysvena gates
 #     Workflow lockfile. None of them runs code from the PR: they read the
 #     PR from the API and run only pinned tools on its files.
 #   - Repo checks: Changeset, lessons and agent rules. They run code from the
-#     PR (its dependencies' install scripts, its scripts and CLIs), so they
+#     PR (its scripts and CLIs; the install scripts of its dependencies are
+#     switched off, but the PR can switch one on again), so they
 #     stay in a job of their own: that code can change the environment of
 #     later steps in the same job (GITHUB_ENV, GITHUB_PATH, files), but never
 #     the Gates job.
@@ -41,9 +42,11 @@ name: sysvena gates
 on:
   pull_request:
 
+# No `cancel-in-progress`: "Verify that your ruleset workflow does not use the
+# `cancel-in-progress` concurrency setting" (GitHub Docs, Troubleshooting
+# rules, "Concurrency"). A newer run of the same PR waits for the running one.
 concurrency:
   group: sysvena-gates-${{ github.repository }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -68,18 +71,19 @@ jobs:
       # one gets an entry when it is first published; a scope-wide rule would
       # also pass a public package of the same name, as a purl does not say
       # which registry it came from. Own reusable workflows called from
-      # sysvena/.github are reported the same way (the repository has no
-      # licence file yet); each one gets its own entry (a purl names the
-      # owner, but one entry per workflow keeps the list explicit).
+      # sysvena/.github are reported the same way; each one gets its own
+      # entry (a purl names the owner, but one entry per workflow keeps the
+      # list explicit).
       # Advisories that cannot be fixed yet, each with the review behind it.
       #   GHSA-3g3m-2fjr-6pw4 (glob >= 9.0.0, <= 14.0.1, moderate): an aborted
       #     async walk keeps reading directories. Fixed only in glob 14.0.2;
       #     every Mercato 0.9.0 app gets glob 10 (archiver-utils, ^10) and 13
       #     (jest, test-exclude, ^13), as upstream main does. No caller uses
       #     an AbortSignal: archiver-utils calls glob.sync only, Mercato
-      #     imports glob in build scripts only, jest is a dev tool. Reviewed
-      #     by the maintainer 2026-11-17; re-check at the Mercato 0.10.0
-      #     upgrade (plan sysvena/mercato-platform#2 step 5).
+      #     imports glob in build scripts only, jest is a dev tool. GitHub
+      #     shows the alert with the scope runtime. Reviewed by the
+      #     maintainer 2026-11-17; re-check at the Mercato 0.10.0 upgrade
+      #     (plan sysvena/sysvena#12).
       #   GHSA-g3hv-75wg-m249 (minimatch >= 7.0.0, < 11.0.1, moderate): an
       #     attacker-controlled pattern makes the optimizer grow without
       #     bound. Fixed only in minimatch 11, which removes APIs (makeRe,
@@ -88,24 +92,14 @@ jobs:
       #     and test-exclude, typescript-eslint 8.72, @ts-morph/common 0.29.0)
       #     and 9 (testcontainers -> archiver -> glob 10), all development
       #     and test tools whose patterns come from code or config, never
-      #     from users. typescript-eslint 8.73.0 and @ts-morph/common 0.29.1
+      #     from users; GitHub shows the alert with the scope runtime.
+      #     typescript-eslint 8.73.0 and @ts-morph/common 0.29.1
       #     use ^11.0.1 (published 2026-11-16; the apps take them after the
       #     5-day Yarn age gate); test-exclude 8.0.0, the latest, still uses
       #     ^10.2.2. Reviewed by the maintainer 2026-11-17; remove when jest
       #     and testcontainers ship a patched minimatch (plan
-      #     sysvena/mercato-platform#2 step 5).
-      #   GHSA-fc5q-39xc-vjpf (picomatch <= 4.0.7, high): an attacker-supplied
-      #     glob pattern such as +(*) backtracks exponentially. No patched
-      #     version exists (every release so far is affected). Every Mercato
-      #     0.9.0 app gets picomatch 2 and 4 through changesets, jest, ESLint
-      #     and typescript-eslint (tinyglobby, fast-glob/micromatch), ts-morph,
-      #     @parcel/watcher and node-gyp, and at run time through awilix
-      #     (fast-glob over module paths from code); Next bundles its own copy
-      #     for patterns from next.config. Every pattern comes from code or
-      #     config, never from users. Reviewed by the maintainer 2026-11-17;
-      #     remove when picomatch ships a fix (plan
-      #     sysvena/mercato-platform#2 step 5).
-      ALLOW_GHSAS: GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249, GHSA-fc5q-39xc-vjpf
+      #     sysvena/sysvena#12).
+      ALLOW_GHSAS: GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249
       LICENSE_EXCEPTIONS: |
         [
           {"purl": "pkg:npm/%40sysvena/agent-rules", "license": "NOASSERTION",
@@ -115,7 +109,7 @@ jobs:
           {"purl": "pkg:npm/%40sysvena/module-boundaries", "license": "NOASSERTION",
            "reason": "Own proprietary package (sysvena), GitHub Packages; reviewed by the maintainer 2026-11-16."},
           {"purl": "pkg:githubactions/sysvena/.github/.github/workflows/dependabot-changeset.yml", "license": "NOASSERTION",
-           "reason": "Own reusable workflow (sysvena/.github, no licence file yet, mercato-platform#18); reviewed by the maintainer 2026-11-18."},
+           "reason": "Own reusable workflow (sysvena/.github); the dependency graph reported no licence for it when the entry was added. Reviewed by the maintainer 2026-11-18."},
           {"purl": "pkg:npm/axe-core", "license": "MPL-2.0",
            "reason": "Dependency of eslint-plugin-jsx-a11y (eslint-config-next), development only. MPL-2.0 is file-level weak copyleft; used unmodified. Reviewed by the maintainer 2026-11-16."},
           {"purl": "pkg:npm/lightningcss", "license": "MPL-2.0",
@@ -154,8 +148,6 @@ jobs:
            "reason": "Dependency of ESLint through ajv 6 (every Mercato app lints with ESLint). BSD-2-Clause-Views is BSD-2-Clause plus one sentence that the views are the authors' own, no further obligation; Blue Oak Silver, not classified by Google licenseclassifier, so an exception and not the allow list. Reviewed by the maintainer 2026-11-16."},
           {"purl": "pkg:npm/json-schema-typed", "license": "BSD-2-Clause AND JSON",
            "reason": "Misdetected licence: the package ships only the BSD-2-Clause text (LICENSE.md; the JSON Schema drafts' copyright lines name \"JSON Schema\"), npm declares BSD-2-Clause, no JSON licence text in the package; the graph takes \"BSD-2-Clause AND JSON\" from ClearlyDefined. Dependency of @modelcontextprotocol/sdk (Mercato AI). Curation proposed to ClearlyDefined. Reviewed by the maintainer 2026-11-17."},
-          {"purl": "pkg:npm/leac", "license": "JSON AND MIT",
-           "reason": "Misdetected licence: the package ships only the MIT text (LICENSE), npm and the repository declare MIT, no JSON licence text in the package (the repository has a JSON lexer example); the graph takes \"JSON AND MIT\" from ClearlyDefined. Dependency of html-to-text through selderee and parseley. Curation proposed to ClearlyDefined. Reviewed by the maintainer 2026-11-17."},
           {"purl": "pkg:npm/%40img/sharp-libvips-darwin-arm64", "license": "LGPL-3.0-or-later",
            "reason": "Prebuilt libvips for sharp; sharp is a required dependency of @open-mercato/core (attachments image checks) and of next. One shared library loaded at run time (LGPL-3.0 4d1). Obligations when an image is conveyed to a customer: lawyer doc section 7, plan #2 (SBOM, licence texts, source directions before any image reaches a centre). Reviewed by the maintainer 2026-11-16."},
           {"purl": "pkg:npm/%40img/sharp-libvips-darwin-x64", "license": "LGPL-3.0-or-later",
@@ -632,10 +624,12 @@ jobs:
           fi
           echo "Workflow lockfile OK ($(jq '.findings | length' verify.json) sha-as-ref warning(s), expected with SHA pins)."
 
-      # One line per gate: ✅ passed, ❌ failed, ➖ did not apply. GATES lists
-      # each gate as `<gate>=<steps it needs>;<its own steps>` (step ids): it
-      # failed when any of them failed, passed when one of its own steps
-      # succeeded, and did not apply otherwise.
+      # One line per gate: ✅ passed, ❌ failed, ⚠️ not run, ➖ did not apply.
+      # GATES lists each gate as `<gate>=<steps it needs>;<its own steps>`
+      # (step ids; the last own step is the check itself, the ones before it
+      # prepare it or decide whether it applies). The gate failed when one of
+      # its own steps failed; it passed when its last own step succeeded; it
+      # was not run when a step it needs failed; otherwise it did not apply.
       - name: Summary
         if: ${{ always() }}
         env:
@@ -655,9 +649,12 @@ jobs:
               [ -n "$gate" ] || continue
               result=$(jq -r --arg needs "${ids%%;*}" --arg own "${ids#*;}" '
                 def outcomes($ids): . as $s | [$ids | split(",")[] | select(. != "") | $s[.].outcome // "skipped"];
-                if any((outcomes($needs) + outcomes($own))[]; . == "failure" or . == "cancelled") then "❌ failed"
-                elif any(outcomes($own)[]; . == "success") then "✅ passed"
-                else "➖ did not apply" end' <<< "$STEPS")
+                def bad: . == "failure" or . == "cancelled";
+                outcomes($own) as $o
+                | if any($o[]; bad) then "❌ failed"
+                  elif any(outcomes($needs)[]; bad) then "⚠️ not run"
+                  elif $o[-1] == "success" then "✅ passed"
+                  else "➖ did not apply" end' <<< "$STEPS")
               echo "| $gate | $result |"
             done <<< "$GATES"
           } | tee -a "$GITHUB_STEP_SUMMARY"
@@ -785,6 +782,16 @@ jobs:
         timeout-minutes: 15
         env:
           NPM_AUTH_TOKEN: ${{ github.token }}
+          # The install scripts of the packages stay off, whatever the PR's
+          # .yarnrc.yml says: a setting from the environment overrides the RC
+          # files (Yarn docs, yarnrc: "such values will overwrite any that
+          # might have been defined in the RC files"). Yarn's default since
+          # 4.14 is off too; this makes it explicit. The repository's own
+          # workspace scripts still run (the same docs), and a
+          # `dependenciesMeta` entry of the PR can still switch one package's
+          # build on: this job runs code of the PR in any case (see the
+          # header).
+          YARN_ENABLE_SCRIPTS: 'false'
         run: |
           set -euo pipefail
           # shellcheck source=/dev/null
@@ -822,10 +829,12 @@ jobs:
         timeout-minutes: 5
         run: yarn sysvena-agent-rules check
 
-      # One line per gate: ✅ passed, ❌ failed, ➖ did not apply. GATES lists
-      # each gate as `<gate>=<steps it needs>;<its own steps>` (step ids): it
-      # failed when any of them failed, passed when one of its own steps
-      # succeeded, and did not apply otherwise.
+      # One line per gate: ✅ passed, ❌ failed, ⚠️ not run, ➖ did not apply.
+      # GATES lists each gate as `<gate>=<steps it needs>;<its own steps>`
+      # (step ids; the last own step is the check itself, the ones before it
+      # prepare it or decide whether it applies). The gate failed when one of
+      # its own steps failed; it passed when its last own step succeeded; it
+      # was not run when a step it needs failed; otherwise it did not apply.
       - name: Summary
         if: ${{ always() }}
         env:
@@ -843,9 +852,12 @@ jobs:
               [ -n "$gate" ] || continue
               result=$(jq -r --arg needs "${ids%%;*}" --arg own "${ids#*;}" '
                 def outcomes($ids): . as $s | [$ids | split(",")[] | select(. != "") | $s[.].outcome // "skipped"];
-                if any((outcomes($needs) + outcomes($own))[]; . == "failure" or . == "cancelled") then "❌ failed"
-                elif any(outcomes($own)[]; . == "success") then "✅ passed"
-                else "➖ did not apply" end' <<< "$STEPS")
+                def bad: . == "failure" or . == "cancelled";
+                outcomes($own) as $o
+                | if any($o[]; bad) then "❌ failed"
+                  elif any(outcomes($needs)[]; bad) then "⚠️ not run"
+                  elif $o[-1] == "success" then "✅ passed"
+                  else "➖ did not apply" end' <<< "$STEPS")
               echo "| $gate | $result |"
             done <<< "$GATES"
           } | tee -a "$GITHUB_STEP_SUMMARY"

@@ -503,6 +503,14 @@ detect_case "agent rules dependency in package.json" "agent-rules=true lessons=f
 detect_case "other @sysvena package is not agent rules" "agent-rules=false lessons=false nvmrc=false" \
   'package.json:{"devDependencies":{"@sysvena/agent-rules-extra":"1.0.0"}}'
 
+echo "# Workflow: concurrency"
+policy_case "no cancel-in-progress (a ruleset workflow must not use it)" \
+  '.concurrency | has("cancel-in-progress")' "false"
+
+echo "# Repo checks: install"
+policy_case "the install runs with the packages' install scripts off" \
+  '.jobs."repo-checks".steps[] | select(.name == "Install dependencies") | .env.YARN_ENABLE_SCRIPTS' "false"
+
 echo "# Dependency review: policy"
 dr='.jobs.gates'
 review="$dr.steps[] | select(.name == \"Dependency review\")"
@@ -519,7 +527,7 @@ policy_case "exceptions only from this workflow" "$review | .with.\"allow-depend
   '${{ steps.exceptions.outputs.purls }}'
 # shellcheck disable=SC2016 # literal workflow expressions, not shell
 policy_case "allowed advisories only from this workflow" "$review | .with.\"allow-ghsas\"" '${{ env.ALLOW_GHSAS }}'
-policy_case "allowed advisories as reviewed" "$dr.env.ALLOW_GHSAS" "GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249, GHSA-fc5q-39xc-vjpf"
+policy_case "allowed advisories as reviewed" "$dr.env.ALLOW_GHSAS" "GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249"
 policy_case "only the policy inputs are set" "$review | .with | keys | join(\",\")" \
   "fail-on-severity,fail-on-scopes,allow-licenses,allow-dependencies-licenses,allow-ghsas"
 policy_case "allow list as decided" "$dr.env.ALLOW_LICENSES" \
@@ -792,8 +800,32 @@ summary_case "own step succeeded: passed" "$tmp/gates-summary.sh" "G=a;b" \
   '{"a":{"outcome":"success"},"b":{"outcome":"success"}}' "| G | ✅ passed |"
 summary_case "own step failed: failed" "$tmp/gates-summary.sh" "G=a;b,c" \
   '{"a":{"outcome":"success"},"b":{"outcome":"success"},"c":{"outcome":"failure"}}' "| G | ❌ failed |"
-summary_case "a needed step failed, own skipped: failed" "$tmp/gates-summary.sh" "G=a;b" \
-  '{"a":{"outcome":"failure"},"b":{"outcome":"skipped"}}' "| G | ❌ failed |"
+summary_case "a needed step failed, own skipped: not run" "$tmp/gates-summary.sh" "G=a;b" \
+  '{"a":{"outcome":"failure"},"b":{"outcome":"skipped"}}' "| G | ⚠️ not run |"
+summary_case "a needed step cancelled: not run" "$tmp/repo-summary.sh" "G=a;b" \
+  '{"a":{"outcome":"cancelled"},"b":{"outcome":"skipped"}}' "| G | ⚠️ not run |"
+summary_case "only an earlier own step succeeded: did not apply" "$tmp/gates-summary.sh" "G=a;b,c" \
+  '{"a":{"outcome":"success"},"b":{"outcome":"success"},"c":{"outcome":"skipped"}}' "| G | ➖ did not apply |"
+summary_case "an earlier own step failed: failed" "$tmp/repo-summary.sh" "G=a;b,c" \
+  '{"a":{"outcome":"success"},"b":{"outcome":"failure"},"c":{"outcome":"skipped"}}' "| G | ❌ failed |"
+# The real gate lists and step ids of the workflow.
+gates_list=$(yq '.jobs.gates.steps[] | select(.name == "Summary") | .env.GATES' "$workflow")
+repo_list=$(yq '.jobs."repo-checks".steps[] | select(.name == "Summary") | .env.GATES' "$workflow")
+ok='{"outcome":"success"}'
+skip='{"outcome":"skipped"}'
+bad='{"outcome":"failure"}'
+summary_case "a repository without Changesets, lessons or agent rules: none applies" "$tmp/repo-summary.sh" "$repo_list" \
+  "{\"library\":$ok,\"library-move\":$ok,\"checkout\":$ok,\"detect\":$ok,\"prepare\":$ok,\"node\":$skip,\"lessons\":$skip,\"install\":$skip,\"changeset\":$skip,\"agent-rules\":$skip}" \
+  "| Changeset | ➖ did not apply |;| Lessons | ➖ did not apply |;| Agent rules | ➖ did not apply |"
+summary_case "the install failed: Changeset and Agent rules were not run, Lessons passed" "$tmp/repo-summary.sh" "$repo_list" \
+  "{\"library\":$ok,\"library-move\":$ok,\"checkout\":$ok,\"detect\":$ok,\"prepare\":$ok,\"node\":$ok,\"lessons\":$ok,\"install\":$bad,\"changeset\":$skip,\"agent-rules\":$skip}" \
+  "| Changeset | ⚠️ not run |;| Lessons | ✅ passed |;| Agent rules | ⚠️ not run |"
+summary_case "a repository without workflows: the lockfile gate does not apply" "$tmp/gates-summary.sh" "$gates_list" \
+  "{\"library\":$ok,\"library-move\":$ok,\"pr\":$ok,\"title\":$ok,\"description\":$ok,\"changes\":$ok,\"exceptions\":$ok,\"review\":$ok,\"licences\":$ok,\"checkout\":$ok,\"find\":$ok,\"lf-install\":$skip,\"lockfile\":$skip}" \
+  "| PR title | ✅ passed |;| PR description | ✅ passed |;| Regression test | ✅ passed |;| Dependency review | ✅ passed |;| Workflow lockfile | ➖ did not apply |"
+summary_case "reading the PR failed: its three gates were not run" "$tmp/gates-summary.sh" "$gates_list" \
+  "{\"library\":$ok,\"library-move\":$ok,\"pr\":$bad,\"title\":$skip,\"description\":$skip,\"changes\":$skip,\"exceptions\":$ok,\"review\":$ok,\"licences\":$ok,\"checkout\":$ok,\"find\":$ok,\"lf-install\":$ok,\"lockfile\":$ok}" \
+  "| PR title | ⚠️ not run |;| PR description | ⚠️ not run |;| Regression test | ⚠️ not run |;| Dependency review | ✅ passed |;| Workflow lockfile | ✅ passed |"
 summary_case "own steps skipped: did not apply" "$tmp/gates-summary.sh" "G=a;b" \
   '{"a":{"outcome":"success"},"b":{"outcome":"skipped"}}' "| G | ➖ did not apply |"
 summary_case "own step missing from steps: did not apply" "$tmp/gates-summary.sh" "G=a;b" \
