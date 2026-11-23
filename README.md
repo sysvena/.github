@@ -317,7 +317,9 @@ workflow lockfile; Dependabot (`github-actions`) moves the pin.
   with `npm ci --omit=dev --ignore-scripts` from the lockfile of this
   repository at the pinned commit. The commit job checks the plan strictly
   and pushes the one file with a token of the GitHub App
-  `sysvena-dependabot`.
+  `sysvena-dependabot`; when no changeset is needed it removes the one a
+  former run added, or does nothing
+  (`tests/scripts/dependabot-changeset-commit.sh` runs the step's script).
 - **Source of the script:** the plan job checks the script out from this
   repository at the commit the caller pinned (`job.workflow_repository`,
   `job.workflow_sha`), never from the caller's repository. actionlint 1.7.12

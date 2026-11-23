@@ -233,12 +233,16 @@ jobs:
           if [ "$WRITE" = true ]; then
             mkdir -p .changeset
             cp "$RUNNER_TEMP/changeset.md" "$CHANGESET"
+            git add -- "$CHANGESET"
             message="chore(changeset): add the changeset for this update [dependabot skip]"
-          else
-            rm -f "$CHANGESET"
+          elif git ls-files --error-unmatch -- "$CHANGESET" > /dev/null 2>&1; then
+            git rm -q -- "$CHANGESET"
             message="chore(changeset): remove the changeset of this update [dependabot skip]"
+          else
+            # `git add` of a path that neither exists nor is tracked fails.
+            echo "No changeset is needed and the branch has none."
+            exit 0
           fi
-          git add -A -- "$CHANGESET"
           if git diff --cached --quiet; then
             echo "The changeset is up to date."
             exit 0
