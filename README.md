@@ -73,11 +73,15 @@ Gates:
 
 - **PR title** — `<type>(<area>): <summary>`, at most 72 characters; type
   `feat`, `fix`, `chore`, `docs`, `style`, `refactor`, `test`, `perf`, `ci`,
-  `build` or `revert` (the types of `@commitlint/config-conventional`).
+  `build` or `revert` (the types of `@commitlint/config-conventional`). A PR
+  that Dependabot opened from a branch of the repository is exempt from the
+  length only: Dependabot writes its own title, has no option for its length
+  and puts it back when it rebases.
 - **PR description** — ends with the self-check of project rules §3: a
   `Sources/tests:` part, then a `Quality:` part, each with content (bold labels
   or headings; HTML comments do not count; for Quality, `None.` when there is no
-  gap). Release PRs (`changeset-release/*`) and Dependabot PRs are exempt. The
+  gap). Release PRs (`changeset-release/*`) and Dependabot PRs (opened by
+  Dependabot from a branch of the repository) are exempt. The
   org PR template (`.github/pull_request_template.md`) has both parts; `gh pr
   create --body` does not use it, so agents write them themselves.
 - **Changeset** — when the base commit has `.changeset/config.json`, the gate
